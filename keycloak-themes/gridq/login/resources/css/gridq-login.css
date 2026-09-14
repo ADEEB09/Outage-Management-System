@@ -1,0 +1,182 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");
+
+html, body { margin: 0; min-height: 100vh; }
+
+#gridq-page-fade {
+  position: fixed; inset: 0; z-index: 999; background: rgb(5,5,8);
+  opacity: 1; pointer-events: none; transition: opacity 0.5s ease;
+}
+#gridq-page-fade.gridq-in { opacity: 0; }
+#gridq-page-fade.gridq-out { opacity: 1; pointer-events: all; }
+
+#keycloak-bg {
+  background: rgb(5,5,8) !important;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif !important;
+  position: relative;
+  overflow-x: hidden;
+}
+
+#gridq-canvas { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+#gridq-vignette {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 65% 60% at 50% 50%, transparent 20%, rgba(5,5,8,0.92) 100%);
+}
+#gridq-fade-top {
+  position: fixed; top: 0; left: 0; right: 0; height: 160px; z-index: 0; pointer-events: none;
+  background: linear-gradient(to bottom, rgb(5,5,8), transparent);
+}
+#gridq-fade-bottom {
+  position: fixed; bottom: 0; left: 0; right: 0; height: 160px; z-index: 0; pointer-events: none;
+  background: linear-gradient(to top, rgb(5,5,8), transparent);
+}
+
+#kc-header { background: transparent !important; height: 0 !important; overflow: visible; }
+#kc-header-wrapper { color: transparent !important; position: relative; height: 0; }
+#kc-header-wrapper::before {
+  content: "GridQ";
+  display: block; position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: rgba(255,255,255,0.55);
+  z-index: 2; white-space: nowrap;
+}
+
+.pf-v5-c-login {
+  position: relative; z-index: 1; min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent !important;
+}
+.pf-v5-c-login__container { width: 100%; max-width: 300px; padding: 60px 16px; background: transparent !important; }
+.pf-v5-c-login__main { background: transparent !important; }
+.pf-v5-c-login__main-header { text-align: center; margin-bottom: 32px; background: transparent !important; }
+
+.pf-v5-c-title {
+  color: #ffffff !important;
+  font-size: 21px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+}
+
+.pf-v5-c-login__main-body {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  transition: transform .25s ease, opacity .25s ease;
+}
+.pf-v5-c-login__main-body.gridq-submitting { transform: scale(0.98); opacity: 0.5; }
+
+.pf-v5-c-form__group { margin-bottom: 18px; }
+
+.pf-v5-c-form__label-text {
+  color: rgba(255,255,255,0.4) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Flat, bottom-line style rather than a boxed field */
+.pf-v5-c-form-control {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid rgba(255,255,255,0.18) !important;
+  border-radius: 0 !important;
+  overflow: visible;
+  transition: border-color .15s ease;
+  display: flex !important;
+  align-items: center;
+}
+.pf-v5-c-form-control:focus-within {
+  border-bottom-color: rgba(255,255,255,0.75) !important;
+}
+
+.pf-v5-c-form-control input,
+#username, #password {
+  background: transparent !important;
+  border: none !important;
+  color: #ffffff !important;
+  font-size: 16px !important;
+  padding: 9px 2px !important;
+  width: 100%;
+  outline: none !important;
+  box-shadow: none !important;
+  caret-color: #ffffff;
+}
+
+/* Kill the browser's default blue focus ring entirely */
+input:focus, input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+/* Password-visibility toggle: blend into the field, no white box */
+.pf-v5-c-input-group {
+  border-bottom: 1px solid rgba(255,255,255,0.18) !important;
+  display: flex;
+  align-items: center;
+  transition: border-color .15s ease;
+}
+.pf-v5-c-input-group:focus-within { border-bottom-color: rgba(255,255,255,0.75) !important; }
+.pf-v5-c-input-group .pf-v5-c-form-control { border-bottom: none !important; flex: 1; }
+
+.pf-v5-c-button.pf-m-control {
+  background: transparent !important;
+  border: none !important;
+  color: rgba(255,255,255,0.4) !important;
+  padding: 6px !important;
+  cursor: pointer;
+}
+.pf-v5-c-button.pf-m-control:hover { color: rgba(255,255,255,0.75) !important; }
+.pf-v5-c-button.pf-m-control svg { fill: currentColor !important; }
+
+.pf-v5-c-button.pf-m-primary,
+#kc-login {
+  background: rgba(255,255,255,0.94) !important;
+  color: #0a0a0a !important;
+  border: none !important;
+  border-radius: 980px !important;
+  padding: 12px 20px !important;
+  font-weight: 600 !important;
+  font-size: 15px !important;
+  width: 100%;
+  margin-top: 14px;
+  transition: transform .15s ease, box-shadow .15s ease !important;
+}
+.pf-v5-c-button.pf-m-primary:hover, #kc-login:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255,255,255,0.15) !important;
+}
+
+a, .pf-v5-c-login__main-footer-links-item-link { color: rgba(255,255,255,0.4) !important; font-size: 12.5px; }
+
+#kc-attempted-username { color: rgba(255,255,255,0.85) !important; font-size: 14px !important; font-weight: 500 !important; }
+#reset-login { color: rgba(255,255,255,0.45) !important; font-size: 12.5px !important; text-decoration: none; }
+#reset-login:hover { color: rgba(255,255,255,0.75) !important; }
+#kc-username { margin-bottom: 22px; }
+.pf-v5-c-form-control, .pf-v5-c-input-group {
+  border: none !important;
+  border-bottom: 1px solid rgba(255,255,255,0.18) !important;
+  border-radius: 0 !important;
+}
+.pf-v5-c-form-control:focus-within, .pf-v5-c-input-group:focus-within {
+  border-bottom: 1px solid rgba(255,255,255,0.75) !important;
+}
+
+#kc-otp-login-form label, #kc-otp-login-form .pf-v5-c-form__label-text {
+  color: rgba(255,255,255,0.55) !important;
+}
+#kc-otp-login-form input, #otp {
+  color: #ffffff !important;
+  font-size: 16px !important;
+}
+
+.pf-v5-c-button.pf-m-primary,
+#kc-login,
+.pf-v5-c-button.pf-m-primary:disabled,
+#kc-login:disabled {
+  opacity: 1 !important;
+  color: #0a0a0a !important;
+  background: rgba(255,255,255,0.94) !important;
+  -webkit-text-fill-color: #0a0a0a !important;
+}

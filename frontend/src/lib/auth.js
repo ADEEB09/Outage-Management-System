@@ -1,13 +1,13 @@
 import Keycloak from 'keycloak-js';
 
 // Configurable at build time (see .env.production / Vite's VITE_ prefix
-// convention). This URL runs in the VISITOR'S BROWSER, not on the server —
+// convention). This URL runs in the VISITOR'S BROWSER, not on the server â€”
 // hardcoding "localhost" here means every visitor's browser tries to reach
 // Keycloak on their OWN machine, not the server's, which only ever worked
 // by accident on a laptop where the app and Keycloak run on the same box.
 // For any real deployment this must be the server's actual public address.
 export const keycloak = new Keycloak({
-  url: import.meta.env.VITE_KEYCLOAK_URL || 'http://localhost:8081',
+  url: import.meta.env.VITE_KEYCLOAK_URL || 'http://localhost:8080',
   realm: 'oms-upcl',
   clientId: 'oms-web',
 });

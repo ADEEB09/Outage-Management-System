@@ -18,7 +18,8 @@
     "test": "npm --workspace backend run test"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "shadcn": "^4.19.0"
   },
   "engines": {
     "node": ">=22.5.0"

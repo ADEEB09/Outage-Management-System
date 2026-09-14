@@ -1,15 +1,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path';
-import tailwindcss from '@tailwindcss/vite';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss() ],
   resolve: {
-    // "@/..." import alias — used by the new IncidentSearch/ProfileMenu
-    // components, which follow the common shadcn-ui convention of
-    // importing from "@/components/..." and "@/lib/utils" rather than
-    // relative paths.
-    alias: { '@': path.resolve(__dirname, 'src') },
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
   },
   server: {
     port: 5173,

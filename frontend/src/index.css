@@ -1,20 +1,59 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
 :root{
-  --paper:#eef4f3; --paper-2:#f5faf9; --surface:#ffffff; --surface-2:#fbfefd;
-  --ink:#0b2033; --ink-2:#29465a; --muted:#61798a; --faint:#91a8b5;
-  --line:#d7e5e3; --line-2:#bfd4d1;
-  --navy:#102f4a; --navy-2:#174b68;
-  --live:#0b9f8f; --live-bg:#e2f6f2;
+  --paper:#eef1f4; --paper-2:#f7f9fb; --surface:#ffffff; --surface-2:#fbfcfe;
+  --ink:#0f1b2d; --ink-2:#33465f; --muted:#64748b; --faint:#9fb0c4;
+  --line:#dbe3ec; --line-2:#c8d4e0;
+  --navy:#0f2847; --navy-2:#22456e;
+  --live:#0e9f8e; --live-bg:#e2f6f2;
   --copper:#c56a2c; --copper-bg:#fbeadc;
   --crit:#d7382a; --crit-bg:#fdeceb;
   --high:#e08a1e; --high-bg:#fdf1de;
   --med:#2f6fd6; --med-bg:#e7f0fd;
   --low:#2a9d5c; --low-bg:#e5f6ec;
-  --shadow:0 1px 2px rgba(10,38,53,.05), 0 5px 18px rgba(10,38,53,.07);
-  --shadow-lg:0 10px 34px rgba(10,38,53,.16);
-  --r:10px; --r-sm:7px;
-  --mono:'IBM Plex Mono',ui-monospace,monospace;
-  --disp:'Space Grotesk',system-ui,sans-serif;
-  --ui:'Inter',system-ui,sans-serif;
+  --r:14px; --r-sm:10px;
+  --shadow:0 1px 2px rgba(15,27,45,.04), 0 2px 12px rgba(15,27,45,.05);
+  --shadow-lg:0 12px 40px rgba(15,27,45,.12);
+  --mono:'SF Mono','IBM Plex Mono',ui-monospace,monospace;
+  --disp:-apple-system,BlinkMacSystemFont,'SF Pro Display',system-ui,sans-serif;
+  --ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif;
+  --background:oklch(1 0 0);
+  --foreground:oklch(0.145 0 0);
+  --card:oklch(1 0 0);
+  --card-foreground:oklch(0.145 0 0);
+  --popover:oklch(1 0 0);
+  --popover-foreground:oklch(0.145 0 0);
+  --primary:oklch(0.205 0 0);
+  --primary-foreground:oklch(0.985 0 0);
+  --secondary:oklch(0.97 0 0);
+  --secondary-foreground:oklch(0.205 0 0);
+  --muted-foreground:oklch(0.556 0 0);
+  --accent:oklch(0.97 0 0);
+  --accent-foreground:oklch(0.205 0 0);
+  --destructive:oklch(0.577 0.245 27.325);
+  --border:oklch(0.922 0 0);
+  --input:oklch(0.922 0 0);
+  --ring:oklch(0.708 0 0);
+  --chart-1:oklch(0.87 0 0);
+  --chart-2:oklch(0.556 0 0);
+  --chart-3:oklch(0.439 0 0);
+  --chart-4:oklch(0.371 0 0);
+  --chart-5:oklch(0.269 0 0);
+  --radius:0.625rem;
+  --sidebar:oklch(0.985 0 0);
+  --sidebar-foreground:oklch(0.145 0 0);
+  --sidebar-primary:oklch(0.205 0 0);
+  --sidebar-primary-foreground:oklch(0.985 0 0);
+  --sidebar-accent:oklch(0.97 0 0);
+  --sidebar-accent-foreground:oklch(0.205 0 0);
+  --sidebar-border:oklch(0.922 0 0);
+  --sidebar-ring:oklch(0.708 0 0);
 }
 *{box-sizing:border-box}
 html,body,#root{height:100%}
@@ -37,9 +76,9 @@ button{font-family:inherit;cursor:pointer}
 .rail{background:var(--navy);display:flex;flex-direction:column;align-items:center;
   padding:14px 0;gap:6px;position:relative}
 .rail .brand{width:38px;height:38px;border-radius:9px;
+ /* background:linear-gradient(145deg,#16b7a2 0%,var(--live) 48%,#087b78 100%);*/
   display:grid;place-items:center;margin-bottom:14px}
 .rail .brand b{font-family:var(--disp);color:#fff;font-size:18px;font-weight:700}
-.rail .brand-img{width:32px;height:32px;object-fit:contain}
 .navbtn{width:44px;height:44px;border:0;background:transparent;border-radius:10px;
   display:grid;place-items:center;color:#8fa6c4;transition:.15s;position:relative}
 .navbtn:hover{background:rgba(255,255,255,.08);color:#dce7f4}
@@ -109,7 +148,9 @@ button{font-family:inherit;cursor:pointer}
 
 /* ---- cards ---- */
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
-  box-shadow:var(--shadow)}
+  box-shadow:var(--shadow);transition:box-shadow .2s ease, border-color .2s ease}
+.card:hover{box-shadow:0 2px 8px rgba(15,27,45,.05), 0 8px 28px rgba(15,27,45,.08);
+  border-color:var(--line-2)}
 .card-h{padding:13px 16px;border-bottom:1px solid var(--line);display:flex;
   align-items:center;justify-content:space-between;gap:10px}
 .card-h h3{font-family:var(--disp);font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
@@ -127,8 +168,8 @@ button{font-family:inherit;cursor:pointer}
 .stat .edge{position:absolute;top:0;left:0;bottom:0;width:3px}
 
 /* ---- badges ---- */
-.badge-sev,.badge-st{display:inline-flex;align-items:center;gap:5px;border-radius:5px;
-  padding:2px 8px;font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:capitalize;
+.badge-sev,.badge-st{display:inline-flex;align-items:center;gap:5px;border-radius:980px;
+  padding:3px 10px;font-size:11px;font-weight:640;letter-spacing:-0.005em;text-transform:capitalize;
   font-family:var(--ui)}
 .sev-critical{background:var(--crit-bg);color:var(--crit)}
 .sev-high{background:var(--high-bg);color:var(--high)}
@@ -156,11 +197,15 @@ tbody tr.click{cursor:pointer}
 
 /* ---- buttons ---- */
 .btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-2);
-  background:var(--surface);color:var(--ink);border-radius:var(--r-sm);padding:8px 13px;
-  font-size:13px;font-weight:500;transition:.13s;font-family:var(--ui)}
-.btn:hover{border-color:var(--faint);background:var(--paper-2)}
-.btn.primary{background:var(--navy);border-color:var(--navy);color:#fff}
-.btn.primary:hover{background:var(--navy-2)}
+  background:var(--surface);color:var(--ink);border-radius:980px;padding:9px 18px;
+  font-size:13.5px;font-weight:590;letter-spacing:-0.01em;transition:.18s cubic-bezier(.2,.8,.2,1);
+  font-family:var(--ui);box-shadow:0 1px 2px rgba(15,27,45,.04)}
+.btn:hover{border-color:var(--faint);background:var(--paper-2);transform:translateY(-1px);
+  box-shadow:0 4px 14px rgba(15,27,45,.08)}
+.btn:active{transform:translateY(0) scale(.98)}
+.btn.primary{background:var(--navy);border-color:var(--navy);color:#fff;
+  box-shadow:0 1px 2px rgba(15,27,45,.1), 0 4px 16px rgba(23,51,85,.18)}
+.btn.primary:hover{background:var(--navy-2);box-shadow:0 4px 20px rgba(23,51,85,.28)}
 .btn.live{background:var(--live);border-color:var(--live);color:#fff}
 .btn.live:hover{filter:brightness(1.06)}
 .btn.danger{background:var(--surface);border-color:var(--crit);color:var(--crit)}
@@ -205,7 +250,7 @@ tbody tr.click{cursor:pointer}
   border-bottom:1px solid var(--line);font-size:13px}
 .kv-row:last-child{border:0}
 .kv-row .k{color:var(--muted)}
-.kv-row .v{font-weight:500;text-align:right}
+.kv-row .v{font-weight:500;text-align:right;color:var(--ink)}
 
 .bar{height:7px;background:var(--paper);border-radius:6px;overflow:hidden;border:1px solid var(--line)}
 .bar i{display:block;height:100%;border-radius:6px}
@@ -397,8 +442,128 @@ tr.row-hot td{background:var(--crit-bg)}
 .lp-clear{margin:8px 8px 2px;width:calc(100% - 16px);border:1px solid var(--line);background:var(--paper);color:var(--ink-2);border-radius:9px;padding:8px;font-size:12px;font-weight:500;cursor:pointer;transition:background .12s}
 .lp-clear:hover{background:var(--surface);border-color:var(--line-2)}
 
+@theme inline {
+  --font-heading:var(--font-sans);
+  --font-sans:'Geist Variable', sans-serif;
+  --color-sidebar-ring:var(--sidebar-ring);
+  --color-sidebar-border:var(--sidebar-border);
+  --color-sidebar-accent-foreground:var(--sidebar-accent-foreground);
+  --color-sidebar-accent:var(--sidebar-accent);
+  --color-sidebar-primary-foreground:var(--sidebar-primary-foreground);
+  --color-sidebar-primary:var(--sidebar-primary);
+  --color-sidebar-foreground:var(--sidebar-foreground);
+  --color-sidebar:var(--sidebar);
+  --color-chart-5:var(--chart-5);
+  --color-chart-4:var(--chart-4);
+  --color-chart-3:var(--chart-3);
+  --color-chart-2:var(--chart-2);
+  --color-chart-1:var(--chart-1);
+  --color-ring:var(--ring);
+  --color-input:var(--input);
+  --color-border:var(--border);
+  --color-destructive:var(--destructive);
+  --color-accent-foreground:var(--accent-foreground);
+  --color-accent:var(--accent);
+  --color-muted-foreground:var(--muted-foreground);
+  --color-muted:oklch(0.97 0 0);
+  --color-secondary-foreground:var(--secondary-foreground);
+  --color-secondary:var(--secondary);
+  --color-primary-foreground:var(--primary-foreground);
+  --color-primary:var(--primary);
+  --color-popover-foreground:var(--popover-foreground);
+  --color-popover:var(--popover);
+  --color-card-foreground:var(--card-foreground);
+  --color-card:var(--card);
+  --color-foreground:var(--foreground);
+  --color-background:var(--background);
+  --radius-sm:calc(var(--radius) * 0.6);
+  --radius-md:calc(var(--radius) * 0.8);
+  --radius-lg:var(--radius);
+  --radius-xl:calc(var(--radius) * 1.4);
+  --radius-2xl:calc(var(--radius) * 1.8);
+  --radius-3xl:calc(var(--radius) * 2.2);
+  --radius-4xl:calc(var(--radius) * 2.6);
+}
+
+.dark {
+  --background:oklch(0.145 0 0);
+  --foreground:oklch(0.985 0 0);
+  --card:oklch(0.205 0 0);
+  --card-foreground:oklch(0.985 0 0);
+  --popover:oklch(0.205 0 0);
+  --popover-foreground:oklch(0.985 0 0);
+  --primary:oklch(0.922 0 0);
+  --primary-foreground:oklch(0.205 0 0);
+  --secondary:oklch(0.269 0 0);
+  --secondary-foreground:oklch(0.985 0 0);
+  --muted:oklch(0.269 0 0);
+  --muted-foreground:oklch(0.708 0 0);
+  --accent:oklch(0.269 0 0);
+  --accent-foreground:oklch(0.985 0 0);
+  --destructive:oklch(0.704 0.191 22.216);
+  --border:oklch(1 0 0 / 10%);
+  --input:oklch(1 0 0 / 15%);
+  --ring:oklch(0.556 0 0);
+  --chart-1:oklch(0.87 0 0);
+  --chart-2:oklch(0.556 0 0);
+  --chart-3:oklch(0.439 0 0);
+  --chart-4:oklch(0.371 0 0);
+  --chart-5:oklch(0.269 0 0);
+  --sidebar:oklch(0.205 0 0);
+  --sidebar-foreground:oklch(0.985 0 0);
+  --sidebar-primary:oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground:oklch(0.985 0 0);
+  --sidebar-accent:oklch(0.269 0 0);
+  --sidebar-accent-foreground:oklch(0.985 0 0);
+  --sidebar-border:oklch(1 0 0 / 10%);
+  --sidebar-ring:oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* IncidentSearch dropdown - position set dynamically via JS (inline style), just style it here */
+#search {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-2) !important;
+  color: var(--ink) !important;
+  border-radius: 980px !important;
+  font-family: var(--ui) !important;
+}
+#search:focus, #search:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--live) !important;
+}
+#search::placeholder { color: var(--muted) !important; }
+
+[role='listbox'] {
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--r) !important;
+  box-shadow: var(--shadow-lg) !important;
+  max-height: 400px !important;
+  overflow-y: auto !important;
+  z-index: 500 !important;
+}
+[role='listbox'] * { color: var(--ink) !important; }
+[role='listbox'] [role='option']:hover,
+[role='listbox'] [role='option'][aria-selected='true'] {
+  background: var(--paper-2) !important;
+}
+/* IncidentSearch - remove redundant label, tighten to fit inline in the header row */
+label[for='search'] { display: none !important; }
 /* =========================================================
-   OMS VISUAL THEME — TEAL GREEN × NAVY
+   OMS VISUAL THEME Ã¢â‚¬â€ TEAL GREEN Ãƒâ€” NAVY
    Color-only polish: layout/content intentionally unchanged.
    ========================================================= */
 
@@ -427,9 +592,10 @@ body{
 }
 
 /* Brand / active navigation */
-/* .rail .brand background intentionally removed — the logo image now
-   stands on its own, no colored badge behind it (see App.jsx / index.css
-   base .rail .brand rule). */
+.rail .brand{
+  /*background:linear-gradient(145deg,var(--teal-1) 0%,var(--teal-2) 52%,var(--teal-3) 100%);
+  box-shadow:0 5px 16px rgba(11,159,143,.32);*/
+}
 .navbtn.on{
   background:linear-gradient(135deg,rgba(22,183,162,.20),rgba(16,47,74,.34));
 }
@@ -471,7 +637,7 @@ body{
   color:#82eadc;
 }
 
-/* Cards — subtle teal edge on hover */
+/* Cards Ã¢â‚¬â€ subtle teal edge on hover */
 .card,.stat{
   transition:border-color .15s ease,box-shadow .15s ease;
 }
@@ -609,3 +775,13 @@ body{
 ::-webkit-scrollbar-thumb:hover{
   background:#8eafa9;
 }
+
+.brand-img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+}
+
+.brand-img { width: 30px !important; height: 30px !important; }
+.rail .brand { width: 44px !important; height: 44px !important; }

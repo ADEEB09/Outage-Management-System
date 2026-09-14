@@ -24,7 +24,7 @@ class ScreenBoundary extends Component {
       return (
         <div className="screen-error">
           <h2>This screen hit an error</h2>
-          <p>The rest of the app is still working — pick another tab, or reload.</p>
+          <p>The rest of the app is still working - pick another tab, or reload.</p>
           <pre>{String(this.state.err.message || this.state.err)}</pre>
         </div>
       );
@@ -62,18 +62,18 @@ function LiveTape() {
     const mk = (topic) => (p) => {
       const [label, cls] = TAPE_LABEL[topic];
       let detail = '';
-      if (topic.startsWith('oms.incident')) detail = `${p.id} · ${p.zone} · ${p.status}`;
-      else if (topic.startsWith('scada')) detail = `${p.tag} · ${p.condition}`;
-      else if (topic === 'tcs.call.received') detail = `${p.customer} · ${p.category}`;
-      else if (topic === 'crew.updated') detail = `${p.name} · ${p.status}`;
-      else if (topic === 'crew.job.updated') detail = `${p.id} · ${p.status}`;
+      if (topic.startsWith('oms.incident')) detail = `${p.id} . ${p.zone} . ${p.status}`;
+      else if (topic.startsWith('scada')) detail = `${p.tag} . ${p.condition}`;
+      else if (topic === 'tcs.call.received') detail = `${p.customer} . ${p.category}`;
+      else if (topic === 'crew.updated') detail = `${p.name} . ${p.status}`;
+      else if (topic === 'crew.job.updated') detail = `${p.id} . ${p.status}`;
       setEvents((e) => [{ id: Math.random(), label, cls, detail, t: hhmm(new Date().toISOString()) }, ...e].slice(0, 14));
     };
     const hs = topics.map((t) => { const h = mk(t); socket.on(t, h); return [t, h]; });
     return () => hs.forEach(([t, h]) => socket.off(t, h));
   }, []);
 
-  const feed = events.length ? events : [{ id: 0, label: 'SYSTEM', cls: 'ok', detail: 'Field telemetry stream connected — awaiting events', t: hhmm(new Date().toISOString()) }];
+  const feed = events.length ? events : [{ id: 0, label: 'SYSTEM', cls: 'ok', detail: 'Field telemetry stream connected - awaiting events', t: hhmm(new Date().toISOString()) }];
   const doubled = [...feed, ...feed];
   return (
     <div className="tape" role="status" aria-label="Live event feed">
@@ -100,7 +100,7 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  // Jump to the Incidents screen with a specific incident pre-selected —
+  // Jump to the Incidents screen with a specific incident pre-selected -
   // used by the Alarms table so an operator can go straight from "this alarm
   // fired" to "here's the incident it created" in one click.
   const openIncident = (id) => { setFocusIncidentId(id); setTab('incidents'); };
@@ -127,7 +127,7 @@ export default function App() {
           <div className="masthead-brand">
             <div className="masthead-text">
               <div className="masthead-word">GridQ</div>
-              {/* Real tagline — update here if it changes */}
+              {/* Real tagline - update here if it changes */}
               <div className="masthead-tag">Predict. Prevent. Power.</div>
             </div>
           </div>
@@ -143,10 +143,10 @@ export default function App() {
         <header className="cmd">
           <div>
             <h1>{active[1]}</h1>
-            <div className="sub">Uttarakhand Power Corp · Ganga Corridor Control Centre</div>
+            <div className="sub">Uttarakhand Power Corp . Ganga Corridor Control Centre</div>
           </div>
           <div className="grow" />
-          <div className="conn" title={up ? 'Live link to control-room backend' : 'Reconnecting…'}>
+          <div className="conn" title={up ? 'Live link to control-room backend' : 'ReconnectingΓÇª'}>
             <span className={`dot ${up ? 'up' : 'down'}`} />
             {up ? 'SCADA link live' : 'Reconnecting'}
           </div>

@@ -1,16 +1,16 @@
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 
-// Configurable, same pattern as DATABASE_URL/REDIS_URL/KAFKA_BROKERS — the
+// Configurable, same pattern as DATABASE_URL/REDIS_URL/KAFKA_BROKERS â€” the
 // right value depends on where this runs:
-//   - Laptop dev (Keycloak via docker-compose, no other containers): http://localhost:8081/...
+//   - Laptop dev (Keycloak via docker-compose, no other containers): http://localhost:8080/...
 //   - Inside Docker (backend + keycloak both containers, same compose network):
-//     http://keycloak:8081/... — "keycloak" is the container's service name,
+//     http://keycloak:8081/... â€” "keycloak" is the container's service name,
 //     not localhost, because localhost inside a container means the
 //     container itself, not its neighbors. Same lesson as the earlier
 //     Postgres/Redis/Kafka container-networking fixes.
 const KEYCLOAK_JWKS_URI = process.env.KEYCLOAK_JWKS_URI
-  || 'http://localhost:8081/realms/oms-upcl/protocol/openid-connect/certs';
+  || 'http://localhost:8080/realms/oms-upcl/protocol/openid-connect/certs';
 
 const client = jwksClient({ jwksUri: KEYCLOAK_JWKS_URI });
 
