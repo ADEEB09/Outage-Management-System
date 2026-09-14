@@ -68,8 +68,8 @@ export default function Analytics() {
           <p>IEEE 1366 regulatory indices computed live over {ind?.customersServed?.toLocaleString() || '—'} customers served.</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn">Export CSV</button>
-          <button className="btn">Export PDF</button>
+          <button className="btn" onClick={() => api.exportReliabilityReport('csv').catch((e) => alert('Export failed: ' + e.message))}>Export CSV</button>
+          <button className="btn" onClick={() => api.exportReliabilityReport('pdf').catch((e) => alert('Export failed: ' + e.message))}>Export PDF</button>
         </div>
       </div>
 

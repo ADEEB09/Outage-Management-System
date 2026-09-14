@@ -16,7 +16,9 @@ import { startSimulator } from './realtime/simulator.js';
 import { startScadaConsumer } from './realtime/scada.js';
 import { startRestorationPublisher } from './realtime/restoration.js';
 import { startNotifier } from './realtime/notifier.js';
-
+import { startScheduledReports } from './realtime/scheduledReports.js';
+// ...alongside your other startX() calls at boot:
+startScheduledReports();
 const PORT = process.env.PORT || 4000;
 
  await migrate();

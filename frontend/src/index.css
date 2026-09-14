@@ -220,6 +220,7 @@ tbody tr.click{cursor:pointer}
 
 /* ---- detail drawer ---- */
 .drawer-mask{position:fixed;inset:0;background:rgba(15,27,45,.34);z-index:50;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
   animation:fade .18s ease}
 @keyframes fade{from{opacity:0}}
 .drawer{position:fixed;top:0;right:0;bottom:0;width:min(440px,94vw);background:var(--surface);

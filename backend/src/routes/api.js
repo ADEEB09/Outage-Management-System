@@ -4,9 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { repo } from '../infra/repo.js';
 import { requireRole } from './auth.js';
-import { bus, TOPICS } from '../domain/bus.js';
+import { bus, TOPICS } from '../domain/bus.js';     
 import { canTransition, nextStates, LABELS } from '../domain/lifecycle.js';
 import { computeIndices, computeMTTR } from '../domain/indices.js';
+import { buildCsv, buildPdf } from '../domain/reports.js';
+import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
 
@@ -400,7 +402,41 @@ api.get('/analytics/mttr', async (req, res) => {
   const mttr = computeMTTR(incidents, events);
   res.json(mttr);
 });
+  
+// ---------- P7.2: regulatory reliability reports ----------
+  api.get('/reports/reliability', requireRole('system_admin', 'oms_operator'), async (req, res) => {
+    const { from, to, zone, assetType, format = 'json' } = req.query;
+    const filters = { from, to, zone, assetType };
+    const incidents = await repo.incidents();
+    const indices = computeIndices(incidents, filters);
+    const meta = { generatedAt: new Date().toISOString(), filters: indices.filters };
 
+    if (format === 'csv') {
+      const csv = buildCsv(indices, meta);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="reliability-report.csv"');
+      return res.send(csv);
+    }
+
+    if (format === 'pdf') {
+      const pdf = await buildPdf(indices, meta);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="reliability-report.pdf"');
+      return res.send(pdf);
+    }
+
+    res.json({ ...indices, generatedAt: meta.generatedAt });
+  });
+
+  api.post('/reports/reliability/send-now', requireRole('system_admin'), async (req, res) => {
+  try {
+    await sendReportNow();
+    res.json({ sent: true });
+  } catch (err) {
+    console.error('[send-now] failed:', err.message);
+    res.status(500).json({ sent: false, error: err.message });
+  }
+});
 // ---------- crew app (mobile) ----------
 api.get('/mobile/crews/:id/jobs', async (req, res) => {
   // NOTE: was a sync `.map()` with a repo lookup inside ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â under async repo

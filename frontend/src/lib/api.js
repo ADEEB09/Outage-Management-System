@@ -12,7 +12,26 @@ async function req(method, path, body) {
   if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), { data, status: r.status });
   return data;
 }
-
+async function exportReliabilityReport(format, filters = {}) {
+  const params = new URLSearchParams({ format, ...filters });
+  const r = await fetch(`${BASE}/reports/reliability?${params}`, {
+    method: 'GET',
+    headers: { ...authHeader() },
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw Object.assign(new Error(data.error || r.statusText), { data, status: r.status });
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `reliability-report.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 export const api = {
   incidents: () => req('GET', '/incidents'),
   incident: (id) => req('GET', `/incidents/${id}`),
@@ -31,11 +50,13 @@ export const api = {
   callToIncident: (id) => req('POST', `/calls/${id}/to-incident`),
   indicators: () => req('GET', '/indicators'),
   monthly: () => req('GET', '/analytics/monthly'),
+  exportReliabilityReport,
   audit: () => req('GET', '/audit'),
   network: () => req('GET', '/network'),
   complaints: () => req('GET', '/complaints'),
   complaintTrace: (qid) => req('GET', `/complaints/${qid}/trace`),
   simulateComplaint: () => req('POST', '/complaints/simulate'),
+  
 };
 
 // singleton socket

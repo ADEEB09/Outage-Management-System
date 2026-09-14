@@ -4,7 +4,7 @@ import { bus, TOPICS } from '../domain/bus.js';
 import { db } from '../infra/db.js';
 import { repo } from '../infra/repo.js';
 
-const transport = nodemailer.createTransport({
+export const transport = nodemailer.createTransport({
   host: process.env.BREVO_SMTP_HOST,
   port: Number(process.env.BREVO_SMTP_PORT || 587),
   secure: false,
