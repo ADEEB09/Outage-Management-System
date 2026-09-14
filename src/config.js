@@ -3,7 +3,7 @@
 //
 // During development your phone/emulator must be able to reach the backend.
 // Use your computer's LAN IP (find it with `ipconfig` on Windows or
-// `ifconfig`/`ip a` on mac/Linux) â€” a physical phone can't see the PC's
+// `ifconfig`/`ip a` on mac/Linux) Ã¢â‚¬â€ a physical phone can't see the PC's
 // "localhost". Android emulators should use 10.0.2.2 instead.
 //
 // In production these should come from EAS build profiles / env vars

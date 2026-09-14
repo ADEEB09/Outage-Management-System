@@ -3,13 +3,13 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -74,9 +74,11 @@ function timeAgo(timestamp) {
 
 export default function NativeApp() {
   return (
-    <AppErrorBoundary>
-      <NativeAppScreen />
-    </AppErrorBoundary>
+    <SafeAreaProvider>
+      <AppErrorBoundary>
+        <NativeAppScreen />
+      </AppErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
@@ -112,6 +114,7 @@ class AppErrorBoundary extends Component {
 }
 
 function NativeAppScreen() {
+  const insets = useSafeAreaInsets();
   const [checkingSession, setCheckingSession] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
   const [needsBiometric, setNeedsBiometric] = useState(false);
@@ -318,7 +321,7 @@ function NativeAppScreen() {
       setPendingItems((current) => [...current, queued]);
       setPendingCount((n) => n + 1);
     }
-  }, []);;
+  }, []);
 
   if (checkingSession) {
     return (
@@ -474,7 +477,7 @@ function NativeAppScreen() {
           </View>
         )}
       </ScrollView>
-      <View style={styles.nav}>
+      <View style={[styles.nav, { paddingBottom: 12 + insets.bottom }]}>
         {['Dashboard', 'Jobs', 'Map', 'Profile'].map((item) => (
           <Pressable
             key={item}
