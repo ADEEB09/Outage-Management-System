@@ -114,3 +114,113 @@ export function computeMTTR(incidents, events) {
     .map((z) => ({ zone: z.zone, mttrMinutes: +(z.totalMinutes / z.count).toFixed(1), incidentCount: z.count }))
     .sort((a, b) => b.mttrMinutes - a.mttrMinutes);
 }
+// ============================================================
+// P7.1 -- SLA compliance (supervisor dashboard).
+// Every incident has an sla_due_at deadline. This checks, for each incident
+// that has actually been resolved, whether that happened before or after
+// its deadline. Incidents still open past their deadline count separately
+// as "at risk" rather than compliant or breached, since they haven't been
+// decided yet.
+// ============================================================
+export function computeSLACompliance(incidents, events) {
+  const resolvedAt = {};
+  for (const e of events) {
+    if (e.kind === 'status' && (e.note || '').includes('Resolved')) {
+      const t = new Date(e.ts).getTime();
+      if (!resolvedAt[e.incident_id] || t < resolvedAt[e.incident_id]) {
+        resolvedAt[e.incident_id] = t;
+      }
+    }
+  }
+  const now = Date.now();
+  let compliant = 0, breached = 0, atRisk = 0;
+  const byZone = {};
+  for (const i of incidents) {
+    if (!i.sla_due_at) continue;
+    const dueTime = new Date(i.sla_due_at).getTime();
+    const resolvedTime = resolvedAt[i.id];
+    let outcome;
+    if (resolvedTime) {
+      outcome = resolvedTime <= dueTime ? 'compliant' : 'breached';
+    } else if (now > dueTime) {
+      outcome = 'atRisk';
+    } else {
+      continue;
+    }
+    if (outcome === 'compliant') compliant++;
+    else if (outcome === 'breached') breached++;
+    else atRisk++;
+    const zone = i.zone || 'Unknown';
+    byZone[zone] = byZone[zone] || { zone, compliant: 0, breached: 0, atRisk: 0 };
+    byZone[zone][outcome]++;
+  }
+  const decided = compliant + breached;
+  const complianceRate = decided ? +((compliant / decided) * 100).toFixed(1) : null;
+  return {
+    compliant, breached, atRisk, complianceRate,
+    byZone: Object.values(byZone).sort((a, b) => b.breached - a.breached),
+  };
+}
+
+// ============================================================
+// P7.1 -- Crew productivity (supervisor dashboard).
+// Jobs completed per crew, plus average minutes from Acknowledged to Work
+// Complete per crew -- both computed from the real timestamped job_updates
+// history, not just current job status.
+// ============================================================
+export function computeCrewProductivity(jobs, jobUpdates, crews) {
+  // Per job: earliest Acknowledged timestamp and earliest Work Complete timestamp.
+  const ackAt = {};
+  const completeAt = {};
+  for (const u of jobUpdates) {
+    const t = new Date(u.ts).getTime();
+    if (u.status === 'Acknowledged') {
+      if (!ackAt[u.job_id] || t < ackAt[u.job_id]) ackAt[u.job_id] = t;
+    }
+    if (u.status === 'Work Complete') {
+      if (!completeAt[u.job_id] || t < completeAt[u.job_id]) completeAt[u.job_id] = t;
+    }
+  }
+  const byCrew = {};
+  for (const j of jobs) {
+    const crewId = j.crew_id;
+    if (!crewId) continue;
+    byCrew[crewId] = byCrew[crewId] || { crewId, jobsTotal: 0, jobsCompleted: 0, totalMinutes: 0, minutesCount: 0 };
+    byCrew[crewId].jobsTotal += 1;
+    if (j.status === 'Work Complete') byCrew[crewId].jobsCompleted += 1;
+    const ack = ackAt[j.id];
+    const done = completeAt[j.id];
+    if (ack && done && done >= ack) {
+      byCrew[crewId].totalMinutes += (done - ack) / 60000;
+      byCrew[crewId].minutesCount += 1;
+    }
+  }
+  const nameById = Object.fromEntries((crews || []).map((c) => [c.id, c.name]));
+  return Object.values(byCrew)
+    .map((c) => ({
+      crewId: c.crewId,
+      crewName: nameById[c.crewId] || c.crewId,
+      jobsTotal: c.jobsTotal,
+      jobsCompleted: c.jobsCompleted,
+      avgMinutesPerJob: c.minutesCount ? +(c.totalMinutes / c.minutesCount).toFixed(1) : null,
+    }))
+    .sort((a, b) => b.jobsCompleted - a.jobsCompleted);
+}
+
+// ============================================================
+// P7.1 -- Outage frequency by zone (supervisor dashboard).
+// Simple count of incidents per zone, split by severity so a supervisor
+// can see not just "which zone has the most outages" but "how many of
+// those are actually critical."
+// ============================================================
+export function computeOutageFrequency(incidents) {
+  const byZone = {};
+  for (const i of incidents) {
+    const zone = i.zone || 'Unknown';
+    byZone[zone] = byZone[zone] || { zone, total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+    byZone[zone].total += 1;
+    const sev = (i.severity || '').toLowerCase();
+    if (byZone[zone][sev] !== undefined) byZone[zone][sev] += 1;
+  }
+  return Object.values(byZone).sort((a, b) => b.total - a.total);
+}

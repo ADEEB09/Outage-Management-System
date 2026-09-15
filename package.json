@@ -2,32 +2,66 @@
   "name": "oms-platform",
   "version": "1.0.0",
   "private": true,
-  "description": "Outage Management System — control-room web app, mobile crew app, and event-driven backend (UPCL Ganga Corridor reference build)",
+  "type": "module",
+  "description": "Outage Management System control room and crew app",
   "workspaces": [
     "backend",
     "frontend",
     "mobile"
   ],
+  "main": "index.js",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "node server/index.js",
+    "photo-server": "node server/index.js",
+    "native": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web:native": "expo start --web",
     "seed": "npm --workspace backend run seed",
     "dev:backend": "npm --workspace backend start",
     "dev:web": "npm --workspace frontend run dev",
     "dev:mobile": "npm --workspace mobile run dev",
-    "start": "concurrently -n backend,web,mobile -c cyan,green,magenta \"npm:dev:backend\" \"npm:dev:web\" \"npm:dev:mobile\"",
-    "build": "npm --workspace frontend run build && npm --workspace mobile run build",
-    "test": "npm --workspace backend run test"
+    "test": "npm --workspace backend run test",
+    "start": "concurrently -n backend,web,mobile -c cyan,green,magenta \"npm:dev:backend\" \"npm:dev:web\" \"npm:dev:mobile\""
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~5.0.5",
+    "@react-native-async-storage/async-storage": "2.1.2",
+    "expo": "^57.0.20",
+    "expo-auth-session": "^57.0.11",
+    "expo-camera": "~16.1.11",
+    "expo-crypto": "~14.1.5",
+    "expo-font": "~13.3.2",
+    "expo-image-picker": "~16.1.4",
+    "expo-local-authentication": "~16.0.5",
+    "expo-location": "~18.1.6",
+    "expo-network": "~7.1.5",
+    "expo-secure-store": "~14.2.4",
+    "expo-web-browser": "~14.2.0",
+    "pg": "^8.16.3",
+    "pg-promise": "^12.7.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-native": "^0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-web": "^0.20.0",
+    "react-router-dom": "^7.18.2",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
+    "@types/react": "~19.0.10",
+    "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^8.2.2",
-    "shadcn": "^4.19.0"
+    "shadcn": "^4.19.0",
+    "typescript": "~5.8.3",
+    "vite": "8.2.2",
+    "vite-plugin-pwa": "^1.3.0"
   },
   "engines": {
     "node": ">=22.5.0"
-  },
-  "dependencies": {
-    "node-cron": "^4.6.0",
-    "pdfkit": "^0.20.2",
-    "pg-promise": "^12.7.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

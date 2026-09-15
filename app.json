@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "OMS Crew",
+    "slug": "oms-crew-mobile",
+    "version": "1.0.0",
+    "scheme": "omscrew",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.omscrew.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "OMS Crew uses the camera to capture job evidence photos and scan asset QR tags.",
+        "NSLocationWhenInUseUsageDescription": "OMS Crew uses your location to tag job status updates and photos with GPS coordinates.",
+        "NSFaceIDUsageDescription": "OMS Crew can use Face ID to quickly unlock the app after sign-in."
+      }
+    },
+    "android": {
+      "package": "com.omscrew.mobile",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-local-authentication",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "OMS Crew uses your location to tag job status updates and photos with GPS coordinates."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "OMS Crew uses the camera to capture job evidence photos and scan asset QR tags."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "OMS Crew uses the camera to capture job evidence photos."
+        }
+      ],
+      "expo-web-browser"
+    ]
+  }
+}

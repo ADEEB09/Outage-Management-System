@@ -3,7 +3,7 @@
 const pgp = pgPromise({
 });
 
-const connectionString = process.env.DATABASE_URL || 'postgres://oms:oms@localhost:5432/oms';
+const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/oms';
 export const db = pgp(connectionString);
 
 export async function migrate() {
@@ -98,6 +98,20 @@ export async function migrate() {
       updated_at  TIMESTAMPTZ
     );
 
+    CREATE TABLE IF NOT EXISTS asset_scans (
+      id           TEXT PRIMARY KEY,
+      job_id       TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      crew_id      TEXT,
+      asset_id     TEXT,
+      raw_value    TEXT NOT NULL,
+      asset_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      lat          DOUBLE PRECISION,
+      lon          DOUBLE PRECISION,
+      scanned_at   TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS asset_scans_job_id_idx ON asset_scans(job_id);
+
     CREATE TABLE IF NOT EXISTS job_updates (
       id     TEXT PRIMARY KEY,
       job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -132,10 +146,18 @@ export async function migrate() {
     CREATE TABLE IF NOT EXISTS job_photos (
       id       TEXT PRIMARY KEY,
       job_id   TEXT NOT NULL,
-      data_url TEXT NOT NULL,
+      data_url TEXT,
+      image_data BYTEA,
+      content_type TEXT NOT NULL DEFAULT 'image/webp',
+      original_content_type TEXT,
+      width INTEGER,
+      height INTEGER,
       lat      DOUBLE PRECISION,
       lon      DOUBLE PRECISION,
       note     TEXT,
+      captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      technician_id TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
       ts       TIMESTAMPTZ NOT NULL
     );
     
@@ -155,11 +177,27 @@ export async function migrate() {
       ts        TIMESTAMPTZ NOT NULL
     );
   `);
-   await db.none(`
+  await db.none(`
+    ALTER TABLE alarms    ADD COLUMN IF NOT EXISTS incident_id TEXT REFERENCES incidents(id);
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS data_url TEXT;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS image_data BYTEA;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'image/webp';
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS original_content_type TEXT;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS width INTEGER;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS height INTEGER;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS technician_id TEXT;
+    ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE job_photos ALTER COLUMN data_url DROP NOT NULL;
+  `);
+
+  const postgis = await db.oneOrNone(
+    "SELECT 1 FROM pg_extension WHERE extname = 'postgis'"
+  );
+  if (postgis) await db.none(`
     ALTER TABLE incidents ADD COLUMN IF NOT EXISTS geog public.geography(Point, 4326);
     ALTER TABLE crews     ADD COLUMN IF NOT EXISTS geog public.geography(Point, 4326);
     ALTER TABLE complaints ADD COLUMN IF NOT EXISTS geog public.geography(Point, 4326);
-    ALTER TABLE alarms    ADD COLUMN IF NOT EXISTS incident_id TEXT REFERENCES incidents(id);
 
     CREATE OR REPLACE FUNCTION sync_geog() RETURNS TRIGGER AS $$
     BEGIN

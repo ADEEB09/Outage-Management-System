@@ -1,3 +1,4 @@
+ HEAD
 node_modules/
 dist/
 backend/data/*.db
@@ -11,3 +12,9 @@ mobile_pre_adeeb_merge/
 .env
 backend/.env
 mobile_pre_adeeb_merge/
+
+node_modules/
+.expo/
+dist/
+.env
+ crew-app-update
