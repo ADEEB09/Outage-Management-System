@@ -6,16 +6,17 @@ import { repo } from '../infra/repo.js';
 import { requireRole } from './auth.js';
 import { bus, TOPICS } from '../domain/bus.js';     
 import { canTransition, nextStates, LABELS } from '../domain/lifecycle.js';
-import { computeIndices, computeMTTR } from '../domain/indices.js';
+import { computeIndices, computeMTTR, computeSLACompliance, computeCrewProductivity, computeOutageFrequency } from '../domain/indices.js';
 import { buildCsv, buildPdf } from '../domain/reports.js';
 import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
+import sharp from 'sharp';
 
 export const api = Router();
 const actor = (req) => req.header('x-user') || 'operator';
 
-// ---------- network topology (real Haridwar GIS, loaded once ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â unchanged, no DB) ----------
+// ---------- network topology (real Haridwar GIS, loaded once - unchanged, no DB) ----------
 const _dir = dirname(fileURLToPath(import.meta.url));
 let NETWORK = null;
 try { NETWORK = JSON.parse(readFileSync(join(_dir, '..', 'infra', 'network.json'), 'utf8')); }
@@ -58,6 +59,50 @@ api.post('/incidents/:id/messages', async (req, res) => {
   res.status(201).json(msg);
 });
 
+// Combined photos for an incident, across every job ever tied to it
+// (crew reassignments mean more than one job can share an incident_id).
+api.get('/incidents/:id/photos', async (req, res) => {
+  const photos = await repo.photosForIncident(req.params.id);
+  res.json(photos);
+});
+
+// ---------- crew app job/crew messages ----------
+// These reuse the SAME messages thread the web app's incident drawer shows --
+// a job's messages ARE that job's incident's messages. No separate storage;
+// just resolving job/crew -> incident_id and delegating to the existing
+// repo.messages()/repo.addMessage() functions above.
+api.get('/mobile/jobs/:id/messages', async (req, res) => {
+  const job = await repo.job(req.params.id);
+  if (!job) return res.status(404).json({ error: 'not found' });
+  if (!job.incident_id) return res.json([]);
+  res.json(await repo.messages(job.incident_id));
+});
+
+api.post('/mobile/jobs/:id/messages', async (req, res) => {
+  const job = await repo.job(req.params.id);
+  if (!job) return res.status(404).json({ error: 'not found' });
+  if (!job.incident_id) return res.status(400).json({ error: 'job has no linked incident' });
+  const { body } = req.body || {};
+  if (!body || !String(body).trim()) {
+    return res.status(400).json({ error: 'body required' });
+  }
+  const sender = req.user?.username || 'crew';
+  const msg = await repo.addMessage(job.incident_id, sender, 'field_crew_coordinator', String(body).trim());
+  bus.publish(TOPICS.MESSAGE_POSTED, msg);
+  res.status(201).json(msg);
+});
+
+// A crew's "inbox" -- combined messages across every job currently assigned
+// to them, newest last. Simple default: there's no single ongoing crew
+// thread, so this unions each active job's incident thread instead.
+api.get('/mobile/crews/:id/messages', async (req, res) => {
+  const jobs = await repo.jobsForCrew(req.params.id);
+  const incidentIds = [...new Set(jobs.map((j) => j.incident_id).filter(Boolean))];
+  const threads = await Promise.all(incidentIds.map((id) => repo.messages(id)));
+  const all = threads.flat().sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  res.json(all);
+});
+
 api.post('/incidents', async (req, res) => {
   const b = req.body || {};
   if (!b.zone || !b.severity) return res.status(400).json({ error: 'zone and severity are required (FR-OMS-002)' });
@@ -70,7 +115,7 @@ api.post('/incidents', async (req, res) => {
     lat: b.lat ?? null, lon: b.lon ?? null, crew_id: null, opened_at: opened,
     ert: null, sla_due_at: new Date(Date.now() + SLA * 60000).toISOString(), source: b.source || 'MANUAL',
   });
-  await repo.addIncidentEvent(id, actor(req), 'created', `Manually created ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${b.cause || 'Unknown'}`);
+  await repo.addIncidentEvent(id, actor(req), 'created', `Manually created - ${b.cause || 'Unknown'}`);
   await repo.audit(actor(req), 'incident.create', id);
   bus.publish(TOPICS.INCIDENT_CREATED, inc);
   await cacheDel('indicators');
@@ -82,11 +127,11 @@ api.patch('/incidents/:id/status', requireRole('oms_operator', 'system_admin'), 
   if (!inc) return res.status(404).json({ error: 'not found' });
   const to = req.body?.status;
   if (!canTransition(inc.status, to))
-    return res.status(409).json({ error: `illegal transition ${inc.status} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ${to}`, allowed: nextStates(inc.status) });
+    return res.status(409).json({ error: `illegal transition ${inc.status} - ${to}`, allowed: nextStates(inc.status) });
   const patch = { status: to };
   if (to === 'resolved') patch.ert = null;
   const updated = await repo.updateIncident(inc.id, patch);
-  await repo.addIncidentEvent(inc.id, actor(req), 'status', `${LABELS[inc.status]} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ${LABELS[to]}${req.body?.note ? ' ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ' + req.body.note : ''}`);
+  await repo.addIncidentEvent(inc.id, actor(req), 'status', `${LABELS[inc.status]} - ${LABELS[to]}${req.body?.note ? ' - ' + req.body.note : ''}`);
   await repo.audit(actor(req), 'incident.status', `${inc.id}:${to}`);
   bus.publish(TOPICS.INCIDENT_UPDATED, updated);
   await pushIndices();
@@ -142,8 +187,9 @@ api.post('/incidents/:id/assign', requireRole('oms_operator', 'system_admin'), a
     priority: req.body?.priority || 'Normal', status: 'Acknowledged', address: inc.zone,
     updated_at: new Date().toISOString(),
   });
+  await repo.addJobUpdate(job.id, 'Acknowledged', null, null, null);
   await repo.addIncidentEvent(inc.id, actor(req), 'assigned', `${crew.name} assigned`);
-  await repo.audit(actor(req), 'dispatch.assign', `${inc.id}ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢${crew.id}`);
+  await repo.audit(actor(req), 'dispatch.assign', `${inc.id}-${crew.id}`);
   const updated = await repo.incident(inc.id);
   const updatedCrew = await repo.crew(crew.id);
   bus.publish(TOPICS.INCIDENT_UPDATED, updated);
@@ -158,7 +204,7 @@ api.get('/crews', async (req, res) => res.json(await repo.crews()));
 // Nearest available crews to an incident (PostGIS distance-ranked).
 // Was previously registered *inside* the POST /assign handler, which meant it
 // only existed after the first assign call (and got re-registered on every
-// call after that). Hoisted to top-level route registration ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â fixed as part
+// call after that). Hoisted to top-level route registration - fixed as part
 // of the Phase 1 regression pass.
 api.get('/incidents/:id/nearest-crews', async (req, res) => {
   const inc = await repo.incident(req.params.id);
@@ -180,7 +226,7 @@ api.post('/alarms/:id/ack', async (req, res) => {
 // ---------- mock DMS endpoint (Phase 2, INT-002) ----------
 // Stands in for the utility's real DMS REST interface so the restoration
 // publisher (realtime/restoration.js) is testable end-to-end without a real
-// SCADA/DMS connection ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â exactly like /scada/fault stands in for a live feed.
+// SCADA/DMS connection - exactly like /scada/fault stands in for a live feed.
 // A real DMS integration would replace DMS_RESTORATION_URL in .env with the
 // utility's actual endpoint; this route then becomes dead code, kept only
 // for local dev/demo.
@@ -189,7 +235,7 @@ api.post('/dms/restore', async (req, res) => {
   const { idempotencyKey, incidentId, feeder, action } = req.body || {};
   if (!idempotencyKey || !incidentId) return res.status(400).json({ error: 'idempotencyKey and incidentId are required' });
   if (seenIdempotencyKeys.has(idempotencyKey)) {
-    return res.json({ accepted: true, duplicate: true, message: 'already processed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â idempotent no-op' });
+    return res.json({ accepted: true, duplicate: true, message: 'already processed - idempotent no-op' });
   }
   seenIdempotencyKeys.add(idempotencyKey);
   console.log(`[mock-dms] restoration command: ${action} on ${feeder || incidentId}`);
@@ -200,7 +246,7 @@ api.post('/dms/restore', async (req, res) => {
 // Lets an operator (or the demo) push a synthetic SCADA fault through the exact
 // same auto-detection path the live DNP3/IEC-61968 adapter will use in
 // production. Publishes to the ALARM_RAISED topic; the SCADA consumer does the
-// rest (detect ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ dedup ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ classify ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ auto-create). INT-001.
+// rest (detect - dedup - classify - auto-create). INT-001.
 api.post('/scada/fault', async (req, res) => {
   const { tag, condition = 'CRITICAL', limit_val = 'TRIP', customers, feeder, substation, lat, lon } = req.body || {};
   if (!tag) return res.status(400).json({ error: 'tag is required' });
@@ -219,7 +265,7 @@ api.post('/scada/fault', async (req, res) => {
 });
 
 api.post('/alarms/ack-all', async (req, res) => {
-  // NOTE: was `.forEach(async ...)` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â that pattern doesn't await, so it's a
+  // NOTE: was `.forEach(async ...)` - that pattern doesn't await, so it's a
   // correctness bug once repo calls are async. Use a real loop instead.
   const alarms = await repo.alarms();
   for (const a of alarms.filter(a => !a.ack)) {
@@ -251,7 +297,7 @@ api.post('/calls/:id/to-incident', async (req, res) => {
   res.status(201).json(inc);
 });
 
-// ---------- complaints (external REST intake ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ dedup ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ merge ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ traceability) ----------
+// ---------- complaints (external REST intake - dedup - merge - traceability) ----------
 const CATEGORY_TYPE = { 'No Supply': 'Power Outage', 'Partial Supply': 'Partial Power', 'Voltage': 'Power Quality', 'Wire Down': 'Safety Hazard', 'Meter': 'Metering', 'Other': 'Power Outage' };
 const CATEGORY_SEV = { 'Wire Down': 'critical', 'No Supply': 'high', 'Partial Supply': 'medium', 'Voltage': 'medium', 'Meter': 'low', 'Other': 'medium' };
 
@@ -272,7 +318,7 @@ async function ingestComplaint(body, who) {
   const category = body.category || 'No Supply';
   const lat = typeof body.lat === 'number' ? body.lat : null;
   const lon = typeof body.lon === 'number' ? body.lon : null;
-  const loc = resolveAsset(lat, lon);                       // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ nearest DT, feeder, substation (in-memory, sync)
+  const loc = resolveAsset(lat, lon);                       // - nearest DT, feeder, substation (in-memory, sync)
 
   const candidates = loc.substation ? await repo.activeIncidentsAtSubstation(loc.substation) : [];
   const match = pickIncident(candidates, category);
@@ -281,7 +327,7 @@ async function ingestComplaint(body, who) {
   if (match) {                                              // MERGE
     incidentId = match.id; action = 'merged';
     await repo.updateIncident(match.id, { customers: (match.customers || 0) + 1 });
-    await repo.addIncidentEvent(match.id, who, 'complaint', `Merged complaint ${qid}${body.externalId ? ' (ext ' + body.externalId + ')' : ''} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${category}, ${body.customer || 'customer'}`);
+    await repo.addIncidentEvent(match.id, who, 'complaint', `Merged complaint ${qid}${body.externalId ? ' (ext ' + body.externalId + ')' : ''} - ${category}, ${body.customer || 'customer'}`);
     bus.publish(TOPICS.INCIDENT_UPDATED, await repo.incident(match.id));
   } else {                                                  // NEW
     incidentId = await repo.nextIncidentId(); action = 'created';
@@ -292,7 +338,7 @@ async function ingestComplaint(body, who) {
       opened_at: ts, ert: null, sla_due_at: new Date(Date.now() + 180 * 60000).toISOString(),
       source: 'Customer', substation: loc.substation,
     });
-    await repo.addIncidentEvent(incidentId, who, 'created', `Opened from complaint ${qid} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${category} near ${loc.substation || 'unknown'}`);
+    await repo.addIncidentEvent(incidentId, who, 'created', `Opened from complaint ${qid} - ${category} near ${loc.substation || 'unknown'}`);
     bus.publish(TOPICS.INCIDENT_CREATED, inc);
   }
   await cacheDel('indicators');
@@ -317,7 +363,7 @@ api.post('/complaints', async (req, res) => {
   });
 });
 
-// Full traceback: complaint ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ query ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ incident/problem ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ feeder ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ substation
+// Full traceback: complaint - query - incident/problem - feeder - substation
 api.get('/complaints/:qid/trace', async (req, res) => {
   const c = await repo.complaint(req.params.qid);
   if (!c) return res.status(404).json({ error: 'not found' });
@@ -349,7 +395,7 @@ api.post('/complaints/simulate', async (req, res) => {
 });
 
 // ---------- indicators / analytics ----------
-// Read-through cache (Redis RTDB, SDP ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§3): dashboards poll this endpoint
+// Read-through cache (Redis RTDB, SDP -3): dashboards poll this endpoint
 // frequently and the underlying computation re-scans every incident, so a
 // short TTL cache takes the repeat load off Postgres without risking a
 // stale value for more than a few seconds. Cache is invalidated explicitly
@@ -402,6 +448,24 @@ api.get('/analytics/mttr', async (req, res) => {
   const mttr = computeMTTR(incidents, events);
   res.json(mttr);
 });
+// P7.1 -- Supervisor dashboard: SLA compliance (resolved before/after deadline).
+api.get('/analytics/sla', async (req, res) => {
+  const [incidents, events] = await Promise.all([repo.incidents(), repo.allIncidentEvents()]);
+  const sla = computeSLACompliance(incidents, events);
+  res.json(sla);
+});
+// P7.1 -- Supervisor dashboard: crew productivity (jobs completed, avg time per job).
+api.get('/analytics/crew-productivity', async (req, res) => {
+  const [jobs, jobUpdates, crews] = await Promise.all([repo.jobs(), repo.allJobUpdates(), repo.crews()]);
+  const productivity = computeCrewProductivity(jobs, jobUpdates, crews);
+  res.json(productivity);
+});
+// P7.1 -- Supervisor dashboard: outage frequency by zone, split by severity.
+api.get('/analytics/outage-frequency', async (req, res) => {
+  const incidents = await repo.incidents();
+  const freq = computeOutageFrequency(incidents);
+  res.json(freq);
+});
   
 // ---------- P7.2: regulatory reliability reports ----------
   api.get('/reports/reliability', requireRole('system_admin', 'oms_operator'), async (req, res) => {
@@ -439,7 +503,7 @@ api.get('/analytics/mttr', async (req, res) => {
 });
 // ---------- crew app (mobile) ----------
 api.get('/mobile/crews/:id/jobs', async (req, res) => {
-  // NOTE: was a sync `.map()` with a repo lookup inside ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â under async repo
+  // NOTE: was a sync `.map()` with a repo lookup inside - under async repo
   // calls that returns an array of unresolved Promises. Use Promise.all instead.
   const rawJobs = await repo.jobsForCrew(req.params.id);
   const jobs = await Promise.all(rawJobs.map(async (j) => ({ ...j, incident: await repo.incident(j.incident_id) })));
@@ -452,16 +516,65 @@ api.get('/mobile/crews/:id', async (req, res) => {
   res.json(crew);
 });
 
+api.get('/mobile/crews/:id/messages', async (req, res) => {
+  const crew = await repo.crew(req.params.id);
+  if (!crew) return res.status(404).json({ error: 'not found' });
+  res.json(await repo.messagesForCrew(req.params.id));
+});
+
+api.get('/mobile/jobs/:id/messages', async (req, res) => {
+  const job = await repo.job(req.params.id);
+  if (!job) return res.status(404).json({ error: 'not found' });
+  res.json(job.incident_id ? await repo.messages(job.incident_id) : []);
+});
+
 api.get('/mobile/jobs/:id/history', async (req, res) => res.json(await repo.jobUpdates(req.params.id)));
-// Upload a photo for a job (base64 data URL in body.dataUrl)
+
+api.post('/mobile/jobs/:id/assets/scans', async (req, res) => {
+  const job = await repo.job(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  const { rawValue, assetId, assetDetails, lat, lon, crewId } = req.body || {};
+  if (!rawValue || typeof rawValue !== 'string') {
+    return res.status(400).json({ error: 'rawValue is required' });
+  }
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
+    return res.status(400).json({ error: 'latitude and longitude are required' });
+  }
+  const scan = await repo.addAssetScan({
+    id: `AS${Date.now()}${Math.random().toString(36).slice(2, 8)}`,
+    job_id: job.id,
+    crew_id: crewId || job.crew_id || null,
+    asset_id: assetId || rawValue,
+    raw_value: rawValue,
+    asset_details: assetDetails && typeof assetDetails === 'object' ? assetDetails : {},
+    lat: Number(lat),
+    lon: Number(lon),
+    scanned_at: new Date().toISOString(),
+  });
+  res.status(201).json(scan);
+});
+
+api.get('/mobile/jobs/:id/assets/scans', async (req, res) => {
+  const job = await repo.job(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  res.json(await repo.assetScansForJob(job.id));
+});
+
+function decodePhotoDataUrl(dataUrl) {
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || '');
+  if (!match) throw new Error('Expected a JPEG, PNG, or WebP data URL');
+  return { contentType: match[1], buffer: Buffer.from(match[2], 'base64') };
+}
+
+// Compress every incoming photo before PostgreSQL storage.
 api.post('/mobile/jobs/:id/photos', async (req, res) => {
   const job = await repo.job(req.params.id);
   if (!job) return res.status(404).json({ error: 'not found' });
-  const { dataUrl, lat, lon, note } = req.body || {};
+  const { dataUrl, lat, lon, note, technicianId, metadata } = req.body || {};
   if (!dataUrl || typeof dataUrl !== 'string') {
     return res.status(400).json({ error: 'dataUrl required' });
   }
-  const photo = await repo.addJobPhoto(req.params.id, dataUrl, lat, lon, note);
+  const photo = await repo.addJobPhoto(req.params.id, dataUrl, lat, lon, note, technicianId, metadata);
   const { data_url, ...meta } = photo;
   res.status(201).json(meta);
 });
@@ -481,16 +594,18 @@ api.get('/mobile/photos/:photoId', async (req, res) => {
 api.patch('/mobile/jobs/:id/status', async (req, res) => {
   const job = await repo.job(req.params.id);
   if (!job) return res.status(404).json({ error: 'not found' });
-  const { status, lat, lon, note } = req.body || {};
+  const { lat, lon, note } = req.body || {};
+  const status = req.body?.status === 'Work Finished' ? 'Work Complete' : req.body?.status;
   await repo.updateJob(job.id, { status, updated_at: new Date().toISOString() });
   await repo.addJobUpdate(job.id, status, lat ?? null, lon ?? null, note ?? null);
   // reflect crew status + incident progress back to control room
   const map = { 'En Route': 'in_transit', 'On Site': 'in_service', 'Work Started': 'in_service', 'Work Complete': 'available' };
   if (map[status]) await repo.updateCrew(job.crew_id, { status: map[status] });
   if (status === 'On Site' && job.incident_id) await repo.updateIncident(job.incident_id, { status: 'in_progress' });
+  if (job.incident_id) { await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Status: ' + status); }
   if (status === 'Work Complete' && job.incident_id) {
     await repo.updateIncident(job.incident_id, { status: 'pending' });
-    await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Work complete ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â awaiting verification');
+    await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Work complete - awaiting verification');
   }
   if (job.incident_id) await cacheDel('indicators');
   const updated = await repo.job(job.id);
