@@ -13,13 +13,13 @@ const isAndroidEmulator = false; // flip manually if you're on an Android emulat
 
 export const API_BASE = isAndroidEmulator
   ? "http://10.0.2.2:4001/api"
-  : "http://192.168.0.107:4001/api";
+  : "http://192.168.0.109:4001/api";
 
 export const PHOTO_API_BASE = API_BASE;
 
 export const KEYCLOAK_URL = isAndroidEmulator
   ? "http://10.0.2.2:8080"
-  : "http://192.168.0.107:8080";
+  : "http://192.168.0.109:8080";
 
 export const REALM = "oms-upcl";
 export const CLIENT_ID = "oms-mobile";
