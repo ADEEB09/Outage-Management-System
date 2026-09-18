@@ -32,6 +32,7 @@ import { uploadCapturedPhoto } from './lib/photos';
 import { navigateTo } from './lib/navigate';
 import { openMultiJobRoute } from './lib/routing';
 import { queueUpdate, flushQueue, getQueueLength, getQueueItems } from './lib/offlineQueue';
+import { startCrewTracking, stopCrewTracking, isCrewTrackingActive } from './lib/backgroundLocation';
 import SafetyChecklist from './components/SafetyChecklist';
 import QrScanner from './components/QrScanner';
 import * as PriorityChecklistModule from './components/PriorityChecklist';
@@ -121,6 +122,8 @@ function NativeAppScreen() {
   const [biometricBusy, setBiometricBusy] = useState(false);
   const [biometricError, setBiometricError] = useState('');
   const [biometricOn, setBiometricOn] = useState(false);
+  const [trackingOn, setTrackingOn] = useState(false);
+  const [trackingBusy, setTrackingBusy] = useState(false);
   const [crew, setCrew] = useState({ name: 'Crew Gamma-2', role: 'Field Technician', id: 'C003' });
   const [jobs, setJobs] = useState(FALLBACK_JOBS);
   const [tab, setTab] = useState('Dashboard');
@@ -197,6 +200,12 @@ function NativeAppScreen() {
     if (authenticated) isBiometricEnabled().then(setBiometricOn).catch(() => {});
   }, [authenticated]);
 
+  useEffect(() => {
+    if (authenticated && isAuthenticated()) {
+      isCrewTrackingActive().then(setTrackingOn).catch(() => {});
+    }
+  }, [authenticated]);
+
   const handleBiometricUnlock = useCallback(async () => {
     setBiometricBusy(true);
     setBiometricError('');
@@ -233,6 +242,30 @@ function NativeAppScreen() {
       setBiometricOn(true);
     }
   }, [biometricOn]);
+
+  const toggleTracking = useCallback(async () => {
+    if (trackingBusy) return;
+    console.log('[toggleTracking] pressed, current state:', trackingOn);
+    setTrackingBusy(true);
+    try {
+      if (trackingOn) {
+        console.log('[toggleTracking] stopping...');
+        await stopCrewTracking();
+        console.log('[toggleTracking] stopped.');
+        setTrackingOn(false);
+        return;
+      }
+      console.log('[toggleTracking] starting, crew.id =', crew.id);
+      const started = await startCrewTracking(crew.id);
+      console.log('[toggleTracking] startCrewTracking returned:', started);
+      setTrackingOn(started);
+    } catch (err) {
+      console.log('[toggleTracking] ERROR:', err?.message || err);
+      setTrackingOn(false);
+    } finally {
+      setTrackingBusy(false);
+    }
+  }, [trackingOn, trackingBusy, crew.id]);
 
   const refresh = useCallback(() => {
     if (!authenticated) return;
@@ -400,6 +433,11 @@ function NativeAppScreen() {
               <Text style={styles.onlineText}>{biometricOn ? 'Biometric: On' : 'Enable biometric'}</Text>
             </Pressable>
           )}
+          <Pressable style={styles.online} onPress={toggleTracking} disabled={trackingBusy}>
+            <Text style={styles.onlineText}>
+              {trackingBusy ? 'Updating…' : trackingOn ? 'Tracking: On' : 'Enable tracking'}
+            </Text>
+          </Pressable>
           <Pressable
             style={styles.online}
             onPress={async () => {
