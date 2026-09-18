@@ -1,4 +1,4 @@
-﻿import http from "node:http";
+import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { URL } from "node:url";
@@ -43,6 +43,7 @@ const photoSchemaSql = `
   CREATE INDEX IF NOT EXISTS job_photos_job_id_idx ON job_photos (job_id);
 `;
 
+// NEW: schema for QR asset scans
 const assetScanSchemaSql = `
   CREATE TABLE IF NOT EXISTS asset_scans (
     id TEXT PRIMARY KEY,
@@ -57,6 +58,18 @@ const assetScanSchemaSql = `
   );
 
   CREATE INDEX IF NOT EXISTS asset_scans_job_id_idx ON asset_scans (job_id);
+`;
+
+const crewLocationSchemaSql = `
+  CREATE TABLE IF NOT EXISTS crew_locations (
+    id BIGSERIAL PRIMARY KEY,
+    crew_id TEXT NOT NULL,
+    lat DOUBLE PRECISION NOT NULL,
+    lon DOUBLE PRECISION NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS crew_locations_crew_id_idx ON crew_locations (crew_id, recorded_at DESC);
 `;
 
 function sendJson(response, status, payload) {
@@ -122,6 +135,7 @@ async function storePhoto(jobId, payload) {
   return { ...result.rows[0], originalBytes: original.buffer.length };
 }
 
+// NEW: store a QR asset scan
 async function storeAssetScan(jobId, payload) {
   const latitude = Number(payload.lat);
   const longitude = Number(payload.lon);
@@ -148,9 +162,24 @@ async function storeAssetScan(jobId, payload) {
   return result.rows[0];
 }
 
+async function storeCrewLocation(crewId, payload) {
+  const latitude = Number(payload.lat);
+  const longitude = Number(payload.lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new Error("Latitude and longitude are required; location was not stored");
+  }
+  const result = await pool.query(
+    `INSERT INTO crew_locations (crew_id, lat, lon) VALUES ($1, $2, $3)
+     RETURNING id, crew_id, lat, lon, recorded_at`,
+    [crewId, latitude, longitude]
+  );
+  return result.rows[0];
+}
+
 async function ensureDatabaseSchema() {
   await pool.query(photoSchemaSql);
   await pool.query(assetScanSchemaSql);
+  await pool.query(crewLocationSchemaSql); // NEW
   await pool.query(`
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS technician_id TEXT;
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -174,11 +203,19 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 201, { photo });
     }
 
+    // NEW: QR asset scan route
     const assetScanMatch = url.pathname.match(/^\/api\/mobile\/jobs\/([^/]+)\/assets\/scans$/);
     if (request.method === "POST" && assetScanMatch) {
       const payload = await readJson(request);
       const scan = await storeAssetScan(decodeURIComponent(assetScanMatch[1]), payload);
       return sendJson(response, 201, scan);
+    }
+
+    const crewLocationMatch = url.pathname.match(/^\/api\/mobile\/crews\/([^/]+)\/location$/);
+    if (request.method === "POST" && crewLocationMatch) {
+      const payload = await readJson(request);
+      const location = await storeCrewLocation(decodeURIComponent(crewLocationMatch[1]), payload);
+      return sendJson(response, 201, location);
     }
 
     return sendJson(response, 404, { error: "Not found" });
