@@ -516,6 +516,21 @@ api.get('/mobile/crews/:id', async (req, res) => {
   res.json(crew);
 });
 
+// Continuous background location ping from the crew's phone. Persists the
+// crew's live lat/lon (the crews.geog column auto-updates via DB trigger,
+// which is what nearestAvailableCrews() and the dispatch map already read).
+api.post('/mobile/crews/:id/location', async (req, res) => {
+  const { lat, lon } = req.body || {};
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: 'lat/lon required' });
+  }
+  const crew = await repo.crew(req.params.id);
+  if (!crew) return res.status(404).json({ error: 'not found' });
+  const updated = await repo.updateCrew(req.params.id, { lat, lon });
+  bus.publish(TOPICS.CREW_UPDATED, updated);
+  res.json({ ok: true, crew: updated });
+});
+
 api.get('/mobile/crews/:id/messages', async (req, res) => {
   const crew = await repo.crew(req.params.id);
   if (!crew) return res.status(404).json({ error: 'not found' });

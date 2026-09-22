@@ -5,10 +5,12 @@
 // since background location needs native task registration.
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE } from "../config";
-import { authHeader } from "./auth";
+import { getFreshAccessToken } from "./auth";
 
 const TASK_NAME = "oms-crew-location-task";
+const CREW_ID_KEY = "oms-tracking-crew-id";
 let currentCrewId = null;
 
 // The background task must be defined at module scope (not inside a
@@ -22,18 +24,31 @@ TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
   }
   const { locations } = data || {};
   const latest = locations?.[0];
-  if (!latest || !currentCrewId) return;
+  if (!latest) return;
+
+  // Same headless-restart concern as the token: `currentCrewId` is only set
+  // in memory by startCrewTracking(), so it's gone if this fired in a fresh
+  // JS instance after the app process was killed. Fall back to storage.
+  const crewId = currentCrewId || (await AsyncStorage.getItem(CREW_ID_KEY).catch(() => null));
+  if (!crewId) return;
+
+  const url = `${API_BASE}/mobile/crews/${crewId}/location`;
+  const body = JSON.stringify({ lat: latest.coords.latitude, lon: latest.coords.longitude });
 
   try {
-    const url = `${API_BASE}/mobile/crews/${currentCrewId}/location`;
+    // Always read/refresh straight from SecureStore rather than the in-memory
+    // auth module state — this task can run in a headless JS instance
+    // (app killed, Android woke it just for this task) with no app state.
+    const token = await getFreshAccessToken();
+    if (!token) {
+      console.warn("[backgroundLocation] no valid session token available, skipping ping");
+      return;
+    }
     console.log("[backgroundLocation] sending ping to:", url, "coords:", latest.coords.latitude, latest.coords.longitude);
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeader() },
-      body: JSON.stringify({
-        lat: latest.coords.latitude,
-        lon: latest.coords.longitude,
-      }),
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body,
     });
     console.log("[backgroundLocation] response status:", response.status);
   } catch (err) {
@@ -45,6 +60,7 @@ TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
 // background location permission (see requestBackgroundLocationPermission).
 export async function startCrewTracking(crewId) {
   currentCrewId = crewId;
+  await AsyncStorage.setItem(CREW_ID_KEY, crewId).catch(() => {});
 
   const alreadyRunning = await Location.hasStartedLocationUpdatesAsync(TASK_NAME).catch(() => false);
   if (alreadyRunning) return true;
@@ -69,6 +85,7 @@ export async function startCrewTracking(crewId) {
 
 export async function stopCrewTracking() {
   currentCrewId = null;
+  await AsyncStorage.removeItem(CREW_ID_KEY).catch(() => {});
   const running = await Location.hasStartedLocationUpdatesAsync(TASK_NAME).catch(() => false);
   if (running) await Location.stopLocationUpdatesAsync(TASK_NAME);
 }

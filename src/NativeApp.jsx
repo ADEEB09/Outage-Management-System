@@ -396,7 +396,7 @@ function NativeAppScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#173355" />
       <View style={styles.header}>
         <View>
@@ -450,7 +450,7 @@ function NativeAppScreen() {
           </Pressable>
         </View>
       </View>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 100 + insets.bottom }]}>
         {tab === 'Dashboard' ? (
           <>
             <Text style={styles.title}>Today&apos;s field work</Text>
@@ -811,6 +811,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
   const [messagesOpen, setMessagesOpen] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [advancing, setAdvancing] = useState(false);
+  const [checklistDone, setChecklistDone] = useState(false);
 
   // Completion flow: fault diagnosis -> parts used -> crew-lead sign-off.
   // Gates the final "Work Started" -> "Work Complete" transition.
@@ -827,7 +828,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
   const next = NEXT_STATUS[job.status];
 
   const requestAdvance = async () => {
-    if (!next) return;
+    if (!next || !checklistDone) return;
     if (job.status === 'On Site') {
       setShowSafety(true);
       return;
@@ -956,9 +957,17 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           </View>
         </View>
 
-        <PriorityChecklist severity={job.severity} />
+        <PriorityChecklist severity={job.severity} onChange={setChecklistDone} />
 
-        {showSafety && (
+        {!checklistDone && (
+          <View style={styles.checklistLock}>
+            <Text style={styles.checklistLockText}>
+              Complete the priority checklist above to unlock the rest of this job.
+            </Text>
+          </View>
+        )}
+
+        {checklistDone && showSafety && (
           <SafetyChecklist
             onPass={() => {
               setShowSafety(false);
@@ -969,7 +978,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           />
         )}
 
-        {completionStep === 'diagnosis' && (
+        {checklistDone && completionStep === 'diagnosis' && (
           <FaultDiagnosisWizard
             onComplete={(answers) => {
               setDiagnosis(answers);
@@ -979,7 +988,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           />
         )}
 
-        {completionStep === 'parts' && (
+        {checklistDone && completionStep === 'parts' && (
           <PartsPicker
             onComplete={(parts) => {
               setPartsUsed(parts);
@@ -989,14 +998,14 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           />
         )}
 
-        {completionStep === 'signoff' && (
+        {checklistDone && completionStep === 'signoff' && (
           <CrewLeadSignOff
             onComplete={finishCompletion}
             onCancel={() => setCompletionStep('parts')}
           />
         )}
 
-        {signOff && (
+        {checklistDone && signOff && (
           <View style={styles.completionSummary}>
             <Text style={styles.completionSummaryTitle}>Job closed out</Text>
             {diagnosis && (
@@ -1015,17 +1024,21 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           </View>
         )}
 
+        {checklistDone && (
         <Pressable style={styles.secondaryBtn} onPress={() => {
           onNavigate(job);
           navigateTo(job.address);
         }}>
           <Text style={styles.secondaryBtnText}>Navigate to site</Text>
         </Pressable>
+        )}
 
+        {checklistDone && (
         <Pressable style={styles.secondaryBtn} onPress={loadMessages}>
           <Text style={styles.secondaryBtnText}>Messages from OMS server</Text>
         </Pressable>
-        {messagesOpen && (
+        )}
+        {checklistDone && messagesOpen && (
           <View style={styles.messagesPanel}>
             <View style={styles.messagesHeader}>
               <Text style={styles.sectionSmall}>OMS JOB MESSAGES</Text>
@@ -1044,6 +1057,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           </View>
         )}
 
+        {checklistDone && (
         <View style={styles.assetRow}>
           <Text style={styles.sectionSmall}>ASSET SCAN</Text>
           {assetId ? <Text style={styles.assetValue}>Attached asset: {assetId}</Text> : null}
@@ -1053,8 +1067,9 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
             <Text style={styles.secondaryBtnText}>Scan QR asset tag</Text>
           </Pressable>
         </View>
+        )}
 
-        {showScanner && (
+        {checklistDone && showScanner && (
           <View style={styles.scannerWrap}>
             <QrScanner
               onScan={handleAssetScan}
@@ -1063,13 +1078,15 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
           </View>
         )}
 
+        {checklistDone && (
         <Pressable style={styles.secondaryBtn} onPress={takePhoto} disabled={uploading || photoCount >= MAX_JOB_PHOTOS}>
           <Text style={styles.secondaryBtnText}>{uploading ? 'Compressing and storing…' : `Open camera (${photoCount}/${MAX_JOB_PHOTOS})`}</Text>
         </Pressable>
-        {showPhotoCamera && <PhotoCamera onCapture={saveCapturedPhoto} onClose={() => setShowPhotoCamera(false)} />}
+        )}
+        {checklistDone && showPhotoCamera && <PhotoCamera onCapture={saveCapturedPhoto} onClose={() => setShowPhotoCamera(false)} />}
         {message ? <Text style={styles.assetValue}>{message}</Text> : null}
 
-        {next && !completionStep && (
+        {checklistDone && next && !completionStep && (
           <Pressable style={styles.primaryBtn} onPress={requestAdvance} disabled={advancing}>
             <Text style={styles.primaryBtnText}>
               {advancing ? 'Updating status…' : job.status === 'Pending Acceptance' ? 'Accept task' : `${next} →`}
@@ -1358,6 +1375,8 @@ const styles = StyleSheet.create({
   detailId: { color: '#fff', fontWeight: '800' },
   detailContent: { padding: 20, gap: 14, paddingBottom: 80 },
   detailStats: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#fff', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#e6ecf3' },
+  checklistLock: { backgroundColor: '#fff7ea', borderRadius: 10, borderWidth: 1, borderColor: '#f2d9a8', padding: 12 },
+  checklistLockText: { color: '#8a6a33', fontSize: 12, fontWeight: '600', textAlign: 'center' },
   secondaryBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#1F3864', borderRadius: 10, padding: 12, alignItems: 'center' },
   secondaryBtnText: { color: '#1F3864', fontWeight: '700' },
   messagesPanel: { backgroundColor: '#eef5fb', borderRadius: 12, padding: 13, gap: 9 },

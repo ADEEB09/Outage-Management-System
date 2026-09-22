@@ -18,6 +18,8 @@
     },
     "android": {
       "package": "com.omscrew.mobile",
+      "edgeToEdgeEnabled": true,
+      "navigationBarColor": "#ffffff",
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
