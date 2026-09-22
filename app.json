@@ -6,6 +6,7 @@
     "scheme": "omscrew",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "com.omscrew.mobile",
       "infoPlist": {
@@ -20,6 +21,10 @@
       "package": "com.omscrew.mobile",
       "edgeToEdgeEnabled": true,
       "navigationBarColor": "#ffffff",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#173355"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
