@@ -1,0 +1,46 @@
+# Kong routing for the OMS backend -- now with TLS.
+#
+# Apply with: kubectl apply -f kong-routes.yaml
+#
+# NOTE: oms-tls-cert is a SELF-SIGNED test certificate (created for local
+# verification that TLS termination works at all). Browsers and strict
+# HTTP clients will show a trust warning for it -- that's expected. Real
+# production deployment needs a certificate from a real authority (Let's
+# Encrypt, or UPCL's own internal CA if the deployment stays fully
+# internal/on-premises).
+
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: oms-rate-limit
+plugin: rate-limiting
+config:
+  minute: 300
+  limit_by: credential
+  policy: local
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oms-backend-ingress
+  annotations:
+    konghq.com/plugins: oms-rate-limit,oms-jwt-check
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: kong
+  tls:
+    - hosts:
+        - oms-upcl.local
+      secretName: oms-tls-cert
+  rules:
+    - host: oms-upcl.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: oms-backend
+                port:
+                  number: 4000

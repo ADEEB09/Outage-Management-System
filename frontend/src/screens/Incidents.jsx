@@ -110,7 +110,7 @@ function IncidentDrawer({ inc, onClose, onChange }) {
 
   return (
     <Drawer direction="right" open={true} onOpenChange={(open) => { if (!open) onClose(); }} dismissible={false}>
-      <DrawerContent style={{ width: 'min(440px, 94vw)', height: '100vh', borderRadius: 0 }}>
+      <DrawerContent aria-label={`Incident ${inc.id} details`} style={{ width: 'min(440px, 94vw)', height: '100vh', borderRadius: 0 }}>
         <div className="drawer-h">
           <div>
             <div className="id-cell" style={{ fontSize: 13 }}>{inc.id}</div>
@@ -135,6 +135,7 @@ function IncidentDrawer({ inc, onClose, onChange }) {
           <div className="kv-row" style={{ alignItems: 'center', gap: 8 }}>
             <input
               type="datetime-local"
+              aria-label="Estimated restoration date and time"
               value={ertInput}
               onChange={(e) => setErtInput(e.target.value)}
               style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #ccc', fontSize: 13 }}
@@ -156,7 +157,7 @@ function IncidentDrawer({ inc, onClose, onChange }) {
             <>
               <div style={{ margin: '18px 0 8px' }} className="eyebrow">Assign crew - nearest first</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {nearest.map((c) => (
+                {nearest.map((c) =>  n       (
                   <button key={c.id} className="btn sm" disabled={busy} onClick={() => doAssign(c.id)}>
                     {c.name} - {c.meters_away < 1000 ? `${Math.round(c.meters_away)} m` : `${(c.meters_away / 1000).toFixed(1)} km`}
                   </button>
@@ -204,7 +205,7 @@ function NewIncident({ onClose, onCreated }) {
       <aside className="drawer" role="dialog" aria-label="New incident">
         <div className="drawer-h">
           <div style={{ fontFamily: 'var(--disp)', fontSize: 18, fontWeight: 600 }}>New incident</div>
-          <button className="iconbtn" onClick={onClose}><Icon name="x" size={16} /></button>
+          <button className="iconbtn" aria-label="Close" onClick={onClose}><Icon name="x" size={16} /></button>
         </div>
         <div className="drawer-b">
           {field('Zone *', <select style={inp} value={f.zone} onChange={set('zone')}>
@@ -257,6 +258,7 @@ function MessagePanel({ incidentId }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && send()}
+          aria-label="Message the crew"
           placeholder="Message the crew..."
           style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
         />

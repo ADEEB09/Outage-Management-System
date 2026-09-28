@@ -1,0 +1,54 @@
+# Default values for the oms chart. Override any of these at install time
+# with `helm install oms ./oms -f my-production-values.yaml` or
+# `--set backend.replicaCount=3` -- never edit this file per-environment,
+# create a separate values file instead (values-dcc.yaml, values-dr.yaml).
+
+backend:
+  image:
+    # Replace with your real registry path once images are pushed somewhere
+    # Kubernetes can pull from (a private registry, GitLab's built-in one, etc.)
+    repository: oms-backend
+    tag: test
+    pullPolicy: IfNotPresent
+  replicaCount: 2          # start at 2 for basic redundancy even before autoscaling kicks in
+  port: 4000
+  resources:
+    requests:              # what k8s reserves for this pod -- guaranteed minimum
+      cpu: 250m
+      memory: 256Mi
+    limits:                # hard ceiling -- pod gets throttled/killed if it exceeds this
+      cpu: 1000m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70   # scale up once average CPU crosses this
+  env:
+    nodeEnv: production
+
+frontend:
+  image:
+    repository: oms-frontend
+    tag: test
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 80
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 128Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 75
+
+# Secrets (DB connection string, JWT keys, etc.) are deliberately NOT put
+# here in plain text. In production these should come from a Kubernetes
+# Secret created separately (kubectl create secret, or sealed-secrets /
+# a real secrets manager) and referenced by name below.
+existingSecretName: oms-backend-secrets

@@ -11,13 +11,19 @@
 
 const isAndroidEmulator = false; // flip manually if you're on an Android emulator
 
+// LAN IP of this machine's Wi-Fi adapter (from `ipconfig`) — a physical
+// phone on the same network reaches the backend/Keycloak through this,
+// not "localhost". Update this if the machine's IP changes (e.g. DHCP
+// lease renewal, different network).
+const LAN_IP = "192.168.0.115";
+
 export const API_BASE = isAndroidEmulator
   ? "http://10.0.2.2:4000/api"
-  : "http://localhost:4000/api";
+  : `http://${LAN_IP}:4000/api`;
 
 export const KEYCLOAK_URL = isAndroidEmulator
   ? "http://10.0.2.2:8080"
-  : "http://localhost:8080";
+  : `http://${LAN_IP}:8080`;
 
 export const REALM = "oms-upcl";
 export const CLIENT_ID = "oms-mobile";

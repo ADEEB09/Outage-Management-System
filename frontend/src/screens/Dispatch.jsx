@@ -84,7 +84,7 @@ function NearestCrewPicker({ incId, pick, setPick }) {
   useEffect(() => { api.nearestCrews(incId).then(setNearest).catch(() => setNearest([])); }, [incId]);
   useEffect(() => { if (!pick[incId] && nearest.length) setPick((p) => ({ ...p, [incId]: nearest[0].id })); }, [nearest]); // eslint-disable-line
   return (
-    <select className="btn sm" style={{ flex: 1 }} value={pick[incId] || ''} onChange={(e) => setPick({ ...pick, [incId]: e.target.value })}>
+    <select className="btn sm" style={{ flex: 1 }} aria-label="Select nearest crew to assign" value={pick[incId] || ''} onChange={(e) => setPick({ ...pick, [incId]: e.target.value })}>
       <option value="">{nearest.length ? 'Select crew…' : 'No crews available'}</option>
       {nearest.map((c) => (
         <option key={c.id} value={c.id}>

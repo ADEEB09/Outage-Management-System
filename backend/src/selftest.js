@@ -97,6 +97,24 @@ const server = app.listen(4100, async () => {
   const afterTwo = (await j('GET', '/incidents')).body.length;
   check('SCADA duplicate on same asset deduplicated (FR-OMS-003)', r2 && r2.deduplicated === true && afterTwo === afterOne, `same→${r2 && r2.incidentId}`);
 
+  // 3b) A SCADA confirmation on a customer-reported-only incident should
+  // upgrade its severity if SCADA classifies it higher, and log a real
+  // "confirmed" event -- not treat it as just another duplicate report.
+  _resetDedupState();
+  const custInc = await repo.createIncident({
+    id: await repo.nextIncidentId(), type: 'Power Outage', severity: 'medium', status: 'open',
+    zone: 'TESTSUB', feeder: null, substation: 'TESTSUB', customers: 1, cause: 'No Supply',
+    lat: null, lon: null, crew_id: null, opened_at: new Date().toISOString(),
+    ert: null, sla_due_at: new Date(Date.now() + 180 * 60000).toISOString(), source: 'Customer',
+  });
+  const r3b = await handleScadaEvent({ tag: 'TESTSUB.FDR9.CB1.TRIP', condition: 'CRITICAL', customers: 1500 });
+  const upgraded = await repo.incident(custInc.id);
+  const events3b = await repo.incidentEvents(custInc.id);
+  const hasConfirmedEvent = events3b.some((e) => e.kind === 'confirmed');
+  check('SCADA confirmation upgrades a customer-reported incident\'s severity',
+    r3b && r3b.deduplicated === true && upgraded.severity === 'critical' && hasConfirmedEvent,
+    `${upgraded.severity}, confirmed event: ${hasConfirmedEvent}`);
+
   // 4) A MINOR alarm does NOT create an outage
   _resetDedupState();
   const before4 = (await j('GET', '/incidents')).body.length;

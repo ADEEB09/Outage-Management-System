@@ -7,7 +7,7 @@ import Keycloak from 'keycloak-js';
 // by accident on a laptop where the app and Keycloak run on the same box.
 // For any real deployment this must be the server's actual public address.
 export const keycloak = new Keycloak({
-  url: import.meta.env.VITE_KEYCLOAK_URL || 'http://localhost:8080',
+  url: import.meta.env.VITE_KEYCLOAK_URL || 'http://localhost:18080',
   realm: 'oms-upcl',
   clientId: 'oms-web',
 });

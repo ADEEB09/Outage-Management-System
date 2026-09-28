@@ -1,0 +1,141 @@
+name: OMS CI
+
+# Runs on every push and pull request -- catches real breakage (a failing
+# self-test, a Dockerfile that no longer builds) before it reaches anyone
+# else's machine, rather than everyone discovering it independently.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # Runs the backend's real self-test (src/selftest.js) against genuine
+  # Postgres, Redis, and Kafka service containers -- mirroring
+  # docker-compose.yml as closely as possible, so a pass here means the
+  # same thing a pass on your own machine means.
+  # ────────────────────────────────────────────────────────────────
+  test-backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg16
+        env:
+          POSTGRES_DB: oms
+          POSTGRES_USER: oms
+          POSTGRES_PASSWORD: oms
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U oms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      kafka:
+        image: apache/kafka:3.7.1
+        ports: ["9092:9092"]
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: "broker,controller"
+          KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+          KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+          KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+          KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+          KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      # --legacy-peer-deps: same real conflict between the mobile app's
+      # Expo/React Native peer-dependency ranges and the web frontend's
+      # Vite ones that we resolve locally every time -- this is a genuine
+      # property of this shared-lockfile workspace, not a CI-only quirk.
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Wait for Kafka to be genuinely ready
+        run: |
+          for i in $(seq 1 30); do
+            nc -z localhost 9092 && echo "Kafka is up" && exit 0
+            echo "Waiting for Kafka... ($i/30)"
+            sleep 2
+          done
+          echo "Kafka never became reachable" && exit 1
+
+      - name: Run backend self-test
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://oms:oms@localhost:5432/oms
+          REDIS_URL: redis://localhost:6379
+          KAFKA_BROKERS: localhost:9092
+        run: node src/selftest.js
+
+  # ────────────────────────────────────────────────────────────────
+  # Builds both Docker images to prove they still build cleanly on every
+  # push -- the same two builds we proved work by hand, now automatic.
+  # Pushes to GitHub Container Registry (ghcr.io), which needs no extra
+  # secrets -- GITHUB_TOKEN already has permission to publish here.
+  # Images are tagged with the commit SHA always, and additionally
+  # "latest" only when the push is to the default branch, so in-progress
+  # branch builds never silently become what "latest" points to.
+  # ────────────────────────────────────────────────────────────────
+  build-images:
+    runs-on: ubuntu-latest
+    needs: test-backend
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        include:
+          - name: backend
+            dockerfile: backend/Dockerfile
+          - name: frontend
+            dockerfile: frontend/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tags
+        id: tags
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/oms-${{ matrix.name }}"
+          TAGS="${IMAGE}:${{ github.sha }}"
+          if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}

@@ -55,7 +55,7 @@ export default function Dashboard({ go }) {
       <div className="grid" style={{ gridTemplateColumns: '1.6fr 1fr' }}>
         <div className="card">
           <div className="card-h"><h3>Active incidents</h3><span className="eyebrow">{active.length} open</span></div>
-          <div style={{ overflow: 'auto', maxHeight: 380 }}>
+          <div tabIndex={0} role="region" aria-label="Active incidents table" style={{ overflow: 'auto', maxHeight: 380 }}>
             <table>
               <thead><tr><th>ID</th><th>Severity</th><th>Zone</th><th>Feeder</th><th>Customers</th><th>Status</th></tr></thead>
               <tbody>

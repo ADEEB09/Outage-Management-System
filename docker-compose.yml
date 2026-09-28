@@ -1,5 +1,4 @@
-
-# OMS local infrastructure Ã¢â‚¬â€ corrected for the existing backend.
+# OMS local infrastructure  -  corrected for the existing backend.
 # One Postgres image that ALSO has TimescaleDB + PostGIS, so the app's single
 # DATABASE_URL keeps working and the historian lives in the same database.
 # Run:  docker compose up -d
@@ -7,7 +6,7 @@
 services:
 
   # Postgres 16 + PostGIS + TimescaleDB in one image.
-  # The app's existing DATABASE_URL (postgres://oms:oms@localhost:5432/oms) works as-is.
+  # The app's existing DATABASE_URL (postgres://oms:oms@localhost:15432/oms) works as-is.
   postgres:
     image: timescale/timescaledb-ha:pg16
     container_name: oms-postgres
@@ -15,7 +14,7 @@ services:
       POSTGRES_DB: oms
       POSTGRES_USER: oms
       POSTGRES_PASSWORD: oms
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:15432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d
@@ -25,10 +24,47 @@ services:
       timeout: 5s
       retries: 10
 
+  # Streaming replica of oms-postgres. On first start, this container clones
+  # the primary's entire data directory via pg_basebackup, then continuously
+  # streams every subsequent change over the replication connection we
+  # configured on the primary. If oms-postgres genuinely goes down, this
+  # replica already has (near) all its data and can be promoted to take over
+  # -- see docs/REPLICATION.md for the promotion procedure.
+  postgres-replica:
+    image: timescale/timescaledb-ha:pg16
+    container_name: oms-postgres-replica
+    environment:
+      POSTGRES_PASSWORD: oms   # only used if the entrypoint needs it; real auth is via replicator
+      PGUSER: replicator
+      PGPASSWORD: repl_pass_2026
+    ports: ["127.0.0.1:15433:5432"]   # 15433 locally so it doesn't clash with the primary on 15432
+    volumes:
+      - pgdata_replica:/home/postgres/pgdata/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+      if [ ! -s /home/postgres/pgdata/data/PG_VERSION ]; then
+        echo 'No existing data -- cloning primary via pg_basebackup...';
+        rm -rf /home/postgres/pgdata/data/*;
+        pg_basebackup -h postgres -U replicator -D /home/postgres/pgdata/data -Fp -Xs -P -R;
+        chmod 700 /home/postgres/pgdata/data;
+      else
+        echo 'Existing replica data found -- skipping clone, resuming streaming.';
+      fi;
+      exec docker-entrypoint.sh postgres
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     container_name: oms-redis
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:16379:6379"]
     command: ["redis-server", "--appendonly", "yes"]
     volumes: ["redisdata:/data"]
     healthcheck:
@@ -40,35 +76,43 @@ services:
   kafka:
     image: apache/kafka:3.7.1
     container_name: oms-kafka
-    ports: ["9092:9092"]
+    ports: ["127.0.0.1:19092:19092"]
     environment:
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_LISTENERS: "PLAINTEXT://:19092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:19092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # Single-broker dev cluster: the KRaft defaults (replication factor 3)
+      # can never be satisfied with only one broker, which silently blocks
+      # __consumer_offsets from ever being created -- and with no offsets
+      # topic, every consumer group hangs forever on "group coordinator not
+      # available". These must be 1 for a single-node cluster to work at all.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
     volumes: ["kafkadata:/var/lib/kafka/data"]
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --list || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 10
 
-  # Browse Kafka topics/messages at http://localhost:8085
+  # Browse Kafka topics/messages at http://localhost:18085
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: oms-kafka-ui
-    ports: ["8085:8080"]
+    ports: ["127.0.0.1:18085:8080"]
     environment:
       KAFKA_CLUSTERS_0_NAME: oms-local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
       DYNAMIC_CONFIG_ENABLED: "true"
     depends_on: [kafka]
 
-  # Keycloak admin console at http://localhost:8081  (admin / admin)
+  # Keycloak admin console at http://localhost:18080  (admin / admin — change this before it's reachable from anywhere but localhost)
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
     container_name: oms-keycloak
@@ -80,7 +124,7 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: oms
       KC_DB_PASSWORD: oms
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:18080:8080"]
     volumes:
       - ./infra/keycloak-theme/gridq:/opt/keycloak/themes/gridq
     depends_on:
@@ -89,5 +133,6 @@ services:
 
 volumes:
   pgdata:
+  pgdata_replica:
   redisdata:
   kafkadata:

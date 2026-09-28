@@ -114,6 +114,8 @@ export function computeMTTR(incidents, events) {
     .map((z) => ({ zone: z.zone, mttrMinutes: +(z.totalMinutes / z.count).toFixed(1), incidentCount: z.count }))
     .sort((a, b) => b.mttrMinutes - a.mttrMinutes);
 }
+
+
 // ============================================================
 // P7.1 -- SLA compliance (supervisor dashboard).
 // Every incident has an sla_due_at deadline. This checks, for each incident

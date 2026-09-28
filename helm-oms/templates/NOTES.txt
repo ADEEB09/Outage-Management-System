@@ -1,0 +1,19 @@
+OMS has been deployed.
+
+Backend:  {{ .Values.backend.replicaCount }} replica(s) starting, autoscaling {{ if .Values.backend.autoscaling.enabled }}ENABLED ({{ .Values.backend.autoscaling.minReplicas }}-{{ .Values.backend.autoscaling.maxReplicas }} pods){{ else }}disabled{{ end }}
+Frontend: {{ .Values.frontend.replicaCount }} replica(s) starting, autoscaling {{ if .Values.frontend.autoscaling.enabled }}ENABLED ({{ .Values.frontend.autoscaling.minReplicas }}-{{ .Values.frontend.autoscaling.maxReplicas }} pods){{ else }}disabled{{ end }}
+
+Check status with:
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Before this is genuinely usable, you still need to:
+  1. Create the DB/Redis secret this chart references:
+       kubectl create secret generic {{ .Values.existingSecretName }} \
+         --from-literal=DATABASE_URL=postgres://... \
+         --from-literal=REDIS_URL=redis://...
+  2. Push oms-backend/oms-frontend images to a registry the cluster can
+     actually pull from, and update values.yaml's image.repository fields
+     to match (right now they assume a local image, fine for testing with
+     a single-node cluster like minikube/kind, not for a real multi-node one).
+  3. Set up an Ingress (and Kong, per P4.3) for real external access --
+     both Services are ClusterIP-only by design, not exposed externally yet.

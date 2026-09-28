@@ -3,13 +3,13 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import LoginWebView from './components/LoginWebView';
 import {
   restoreSession,
@@ -26,6 +26,7 @@ import { captureAndUpload } from './lib/photos';
 import { navigateTo } from './lib/navigate';
 import { openMultiJobRoute } from './lib/routing';
 import { queueUpdate, flushQueue, getQueueLength, getQueueItems } from './lib/offlineQueue';
+import { startCrewTracking, stopCrewTracking, isCrewTrackingActive } from './lib/backgroundLocation';
 import SafetyChecklist from './components/SafetyChecklist';
 import QrScanner from './components/QrScanner';
 import * as PriorityChecklistModule from './components/PriorityChecklist';
@@ -64,9 +65,11 @@ function timeAgo(timestamp) {
 
 export default function NativeApp() {
   return (
-    <AppErrorBoundary>
-      <NativeAppScreen />
-    </AppErrorBoundary>
+    <SafeAreaProvider>
+      <AppErrorBoundary>
+        <NativeAppScreen />
+      </AppErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
@@ -102,12 +105,15 @@ class AppErrorBoundary extends Component {
 }
 
 function NativeAppScreen() {
+  const insets = useSafeAreaInsets();
   const [checkingSession, setCheckingSession] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
   const [needsBiometric, setNeedsBiometric] = useState(false);
   const [biometricBusy, setBiometricBusy] = useState(false);
   const [biometricError, setBiometricError] = useState('');
   const [biometricOn, setBiometricOn] = useState(false);
+  const [trackingOn, setTrackingOn] = useState(false);
+  const [trackingBusy, setTrackingBusy] = useState(false);
   const [crew, setCrew] = useState({ name: 'Crew Gamma-2', role: 'Field Technician', id: 'C003' });
   const [jobs, setJobs] = useState(FALLBACK_JOBS);
   const [tab, setTab] = useState('Jobs');
@@ -143,6 +149,12 @@ function NativeAppScreen() {
 
   useEffect(() => {
     if (authenticated) isBiometricEnabled().then(setBiometricOn).catch(() => {});
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (authenticated && isAuthenticated()) {
+      isCrewTrackingActive().then(setTrackingOn).catch(() => {});
+    }
   }, [authenticated]);
 
   const handleBiometricUnlock = useCallback(async () => {
@@ -181,6 +193,24 @@ function NativeAppScreen() {
       setBiometricOn(true);
     }
   }, [biometricOn]);
+
+  const toggleTracking = useCallback(async () => {
+    if (trackingBusy) return;
+    setTrackingBusy(true);
+    try {
+      if (trackingOn) {
+        await stopCrewTracking();
+        setTrackingOn(false);
+        return;
+      }
+      const started = await startCrewTracking(crew.id);
+      setTrackingOn(started);
+    } catch {
+      setTrackingOn(false);
+    } finally {
+      setTrackingBusy(false);
+    }
+  }, [trackingOn, trackingBusy, crew.id]);
 
   const refresh = useCallback(() => {
     if (!authenticated) return;
@@ -288,7 +318,7 @@ function NativeAppScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#173355" />
       <View style={styles.header}>
         <View>
@@ -312,6 +342,13 @@ function NativeAppScreen() {
               <Text style={styles.onlineText}>{biometricOn ? 'Biometric: On' : 'Enable biometric'}</Text>
             </Pressable>
           )}
+          {isAuthenticated() && (
+            <Pressable style={styles.online} onPress={toggleTracking} disabled={trackingBusy}>
+              <Text style={styles.onlineText}>
+                {trackingBusy ? 'Updating…' : trackingOn ? 'Tracking: On' : 'Enable tracking'}
+              </Text>
+            </Pressable>
+          )}
           <Pressable
             style={styles.online}
             onPress={async () => {
@@ -324,7 +361,7 @@ function NativeAppScreen() {
           </Pressable>
         </View>
       </View>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 100 + insets.bottom }]}>
         {tab === 'Jobs' ? (
           <>
             <Text style={styles.title}>Today&apos;s field work</Text>
@@ -560,6 +597,7 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
   const [assetId, setAssetId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
+  const [checklistDone, setChecklistDone] = useState(false);
 
   // Completion flow: fault diagnosis -> parts used -> crew-lead sign-off.
   // Gates the final "Work Started" -> "Work Complete" transition.
@@ -571,7 +609,7 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
   const next = NEXT_STATUS[job.status];
 
   const requestAdvance = () => {
-    if (!next) return;
+    if (!next || !checklistDone) return;
     if (job.status === 'On Site') {
       setShowSafety(true);
       return;
@@ -632,9 +670,17 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
           </View>
         </View>
 
-        <PriorityChecklist severity={job.severity} />
+        <PriorityChecklist severity={job.severity} onChange={setChecklistDone} />
 
-        {showSafety && (
+        {!checklistDone && (
+          <View style={styles.checklistLock}>
+            <Text style={styles.checklistLockText}>
+              Complete the priority checklist above to unlock the rest of this job.
+            </Text>
+          </View>
+        )}
+
+        {checklistDone && showSafety && (
           <SafetyChecklist
             onPass={() => {
               setShowSafety(false);
@@ -644,7 +690,7 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
           />
         )}
 
-        {completionStep === 'diagnosis' && (
+        {checklistDone && completionStep === 'diagnosis' && (
           <FaultDiagnosisWizard
             onComplete={(answers) => {
               setDiagnosis(answers);
@@ -654,7 +700,7 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
           />
         )}
 
-        {completionStep === 'parts' && (
+        {checklistDone && completionStep === 'parts' && (
           <PartsPicker
             onComplete={(parts) => {
               setPartsUsed(parts);
@@ -664,14 +710,14 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
           />
         )}
 
-        {completionStep === 'signoff' && (
+        {checklistDone && completionStep === 'signoff' && (
           <CrewLeadSignOff
             onComplete={finishCompletion}
             onCancel={() => setCompletionStep('parts')}
           />
         )}
 
-        {signOff && (
+        {checklistDone && signOff && (
           <View style={styles.completionSummary}>
             <Text style={styles.completionSummaryTitle}>Job closed out</Text>
             {diagnosis && (
@@ -690,22 +736,26 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
           </View>
         )}
 
-        <Pressable style={styles.secondaryBtn} onPress={() => {
-          onNavigate(job);
-          navigateTo(job.address);
-        }}>
-          <Text style={styles.secondaryBtnText}>Navigate to site</Text>
-        </Pressable>
-
-        <View style={styles.assetRow}>
-          <Text style={styles.sectionSmall}>ASSET SCAN</Text>
-          {assetId ? <Text style={styles.assetValue}>Attached asset: {assetId}</Text> : null}
-          <Pressable style={styles.secondaryBtn} onPress={() => setShowScanner(true)}>
-            <Text style={styles.secondaryBtnText}>Scan QR asset tag</Text>
+        {checklistDone && (
+          <Pressable style={styles.secondaryBtn} onPress={() => {
+            onNavigate(job);
+            navigateTo(job.address);
+          }}>
+            <Text style={styles.secondaryBtnText}>Navigate to site</Text>
           </Pressable>
-        </View>
+        )}
 
-        {showScanner && (
+        {checklistDone && (
+          <View style={styles.assetRow}>
+            <Text style={styles.sectionSmall}>ASSET SCAN</Text>
+            {assetId ? <Text style={styles.assetValue}>Attached asset: {assetId}</Text> : null}
+            <Pressable style={styles.secondaryBtn} onPress={() => setShowScanner(true)}>
+              <Text style={styles.secondaryBtnText}>Scan QR asset tag</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {checklistDone && showScanner && (
           <View style={styles.scannerWrap}>
             <QrScanner
               onScan={(data) => {
@@ -717,12 +767,14 @@ function JobDetail({ job, onClose, onAdvance, onNavigate }) {
           </View>
         )}
 
-        <Pressable style={styles.secondaryBtn} onPress={takePhoto} disabled={uploading}>
-          <Text style={styles.secondaryBtnText}>{uploading ? 'Uploading to PostgreSQL…' : 'Upload photo to PostgreSQL'}</Text>
-        </Pressable>
+        {checklistDone && (
+          <Pressable style={styles.secondaryBtn} onPress={takePhoto} disabled={uploading}>
+            <Text style={styles.secondaryBtnText}>{uploading ? 'Uploading to PostgreSQL…' : 'Upload photo to PostgreSQL'}</Text>
+          </Pressable>
+        )}
         {message ? <Text style={styles.assetValue}>{message}</Text> : null}
 
-        {next && !completionStep && (
+        {checklistDone && next && !completionStep && (
           <Pressable style={styles.primaryBtn} onPress={requestAdvance}>
             <Text style={styles.primaryBtnText}>
               {job.status === 'Pending Acceptance' ? 'Accept task' : `${next} →`}
@@ -918,6 +970,8 @@ const styles = StyleSheet.create({
   detailId: { color: '#fff', fontWeight: '800' },
   detailContent: { padding: 20, gap: 14, paddingBottom: 60 },
   detailStats: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#fff', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#e6ecf3' },
+  checklistLock: { backgroundColor: '#fff7ea', borderRadius: 10, borderWidth: 1, borderColor: '#f2d9a8', padding: 12 },
+  checklistLockText: { color: '#8a6a33', fontSize: 12, fontWeight: '600', textAlign: 'center' },
   secondaryBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#1F3864', borderRadius: 10, padding: 12, alignItems: 'center' },
   secondaryBtnText: { color: '#1F3864', fontWeight: '700' },
   assetRow: { gap: 8 },

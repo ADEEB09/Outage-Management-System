@@ -302,7 +302,7 @@ export default function NetworkMap() {
           {sel && (
             <div className="map-detail card">
               <div className="card-h"><h3>{sel.kind === 'incident' ? sel.id : sel.kind === 'feeder' ? 'Feeder' : sel.label}</h3>
-                <button className="iconbtn" onClick={() => { setSel(null); setSelFeeder(null); highlight(null); }}><Icon name="x" size={15} /></button></div>
+                <button className="iconbtn" aria-label="Close" onClick={() => { setSel(null); setSelFeeder(null); highlight(null); }}><Icon name="x" size={15} /></button></div>
               <div className="card-b">
                 {sel.kind === 'incident' && <><div style={{ display: 'flex', gap: 7, marginBottom: 12 }}><SevBadge sev={sel.severity} /><StatusBadge status={sel.status} /></div>
                   <KV k="Substation" v={sel.substation} /><KV k="Zone" v={sel.zone} /><KV k="Feeder" v={sel.feeder} mono /><KV k="Customers" v={(sel.customers || 0).toLocaleString()} mono /><KV k="Cause" v={sel.cause} /><KV k="Crew" v={sel.crew_id || 'unassigned'} /></>}

@@ -11,15 +11,27 @@
       "infoPlist": {
         "NSCameraUsageDescription": "OMS Crew uses the camera to capture job evidence photos and scan asset QR tags.",
         "NSLocationWhenInUseUsageDescription": "OMS Crew uses your location to tag job status updates and photos with GPS coordinates.",
-        "NSFaceIDUsageDescription": "OMS Crew can use Face ID to quickly unlock the app after sign-in."
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "OMS Crew shares your location with dispatch while you are on duty, including when the app is in the background.",
+        "NSFaceIDUsageDescription": "OMS Crew can use Face ID to quickly unlock the app after sign-in.",
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "android": {
       "package": "com.omscrew.mobile",
+      "edgeToEdgeEnabled": true,
+      "navigationBarColor": "#ffffff",
       "permissions": [
-        "CAMERA",
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -31,7 +43,10 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "OMS Crew uses your location to tag job status updates and photos with GPS coordinates."
+          "locationWhenInUsePermission": "OMS Crew uses your location to tag job status updates and photos with GPS coordinates.",
+          "locationAlwaysAndWhenInUsePermission": "OMS Crew shares your location with dispatch while you are on duty, including when the app is in the background.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       [
@@ -46,7 +61,22 @@
           "cameraPermission": "OMS Crew uses the camera to capture job evidence photos."
         }
       ],
-      "expo-web-browser"
-    ]
+      "expo-web-browser",
+      "expo-font",
+      "expo-task-manager",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "39b18513-eb3c-4ef1-8dc9-f6698fff43c2"
+      }
+    }
   }
 }

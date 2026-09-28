@@ -1,4 +1,5 @@
 import 'dotenv/config'; // loads .env into process.env
+console.log('DATABASE_URL loaded as:', process.env.DATABASE_URL);
 import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
@@ -21,6 +22,22 @@ import { startScheduledReports } from './realtime/scheduledReports.js';
 startScheduledReports();
 const PORT = process.env.PORT || 4000;
 
+// Last-resort crash guards. Registered before the startup awaits below so
+// they also cover migrate/seed/bus init, not just post-listen traffic.
+//
+// Why this exists: a single unhandled DB error on one request used to kill
+// the whole process -- taking the SCADA Kafka consumer, the dashboard, and
+// every other operator's session down with it, not just the one request
+// that failed (see docs/P8_6_CROSS_SOURCE_CORRELATION_RESULTS.md, where a
+// burst test killed the backend ~1.2s in). Staying up degraded beats
+// vanishing: an OMS that drops SCADA fault detection during a storm because
+// one complaint insert lost a race is worse than one that logs and limps.
+function logFatal(kind, err) {
+  console.error(`[fatal] ${kind} at ${new Date().toISOString()}:`, err?.stack || err);
+}
+process.on('unhandledRejection', (reason) => logFatal('unhandledRejection', reason));
+process.on('uncaughtException', (err) => logFatal('uncaughtException', err));
+
  await migrate();
  await seed(); // idempotent — only seeds an empty DB
  await connectRedis(); // non-fatal if unreachable — see infra/redis.js
@@ -34,6 +51,10 @@ app.use(express.json({ limit: '12mb' }));
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use('/portal', express.static(path.join(__dirname, '..', 'public')));
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+app.get('/api/health/ready', async (req, res) => {
+  try { await repo.incidents(); res.json({ status: 'ready' }); }
+  catch (e) { res.status(503).json({ status: 'not ready', error: e.message }); }
+});
 // Public, no-login outage status lookup for customers.
 app.get('/api/public/outage-status', async (req, res) => {
   try {
@@ -55,6 +76,16 @@ app.get('/api/public/outage-status', async (req, res) => {
   }
 });
 app.use('/api', requireAuth, api);
+
+// Global safety net: any request that reaches here already failed to get a
+// response from its own route (an unhandled/forwarded error). Without this,
+// such requests hang until the client times out instead of getting a clean
+// JSON error - see docs/P8_6_CROSS_SOURCE_CORRELATION_RESULTS.md.
+app.use((err, req, res, next) => {
+  console.error('[unhandled route error]', err?.stack || err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'internal server error' });
+});
 
 const http = createServer(app);
 const io = new Server(http, { cors: { origin: '*' } });

@@ -6,7 +6,7 @@ import { createClient } from 'redis';
 // ingest service is the main producer once it exists; for now this module
 // gives the rest of the app (and Phase 2, when it lands) a real client to
 // plug into instead of the in-memory placeholder that was here before.
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:16379';
 
 export const redis = createClient({
   url: REDIS_URL,

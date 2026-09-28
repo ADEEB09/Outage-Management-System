@@ -3,7 +3,7 @@
 const pgp = pgPromise({
 });
 
-const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/oms';
+const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:15432/oms';
 export const db = pgp(connectionString);
 
 export async function migrate() {
@@ -112,6 +112,20 @@ export async function migrate() {
 
     CREATE INDEX IF NOT EXISTS asset_scans_job_id_idx ON asset_scans(job_id);
 
+    -- crew.mobile background-location tracking: a ping every ~30s/50m while
+    -- a crew member has tracking enabled on duty (src/lib/backgroundLocation.js
+    -- in mobile-native-fixed). No FK to crews(id) since a ping can arrive for
+    -- a crew_id the demo data doesn't recognize.
+    CREATE TABLE IF NOT EXISTS crew_locations (
+      id          BIGSERIAL PRIMARY KEY,
+      crew_id     TEXT NOT NULL,
+      lat         DOUBLE PRECISION NOT NULL,
+      lon         DOUBLE PRECISION NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS crew_locations_crew_id_idx ON crew_locations(crew_id, recorded_at DESC);
+
     CREATE TABLE IF NOT EXISTS job_updates (
       id     TEXT PRIMARY KEY,
       job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -210,6 +224,39 @@ export async function migrate() {
     );
     CREATE INDEX IF NOT EXISTS crew_locations_crew_time_idx ON crew_locations(crew_id, recorded_at DESC);
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
+  `);
+
+  // ID sequences for incidents.id / complaints.qid. These replace the old
+  // SELECT COUNT(*) minting in repo.js, which raced under concurrency and
+  // crashed the process on the resulting duplicate-key error (P8.6).
+  // Mirrors db/migrations/sequence_based_id_generation.sql -- that file is
+  // for already-deployed databases, this is so a fresh one self-bootstraps.
+  // Forward-only: GREATEST() never resets a sequence back onto live IDs.
+  await db.none(`
+    CREATE SEQUENCE IF NOT EXISTS incident_id_seq   AS bigint MINVALUE 1;
+    CREATE SEQUENCE IF NOT EXISTS complaint_qid_seq AS bigint MINVALUE 1;
+
+    DO $$
+    DECLARE target bigint;
+    BEGIN
+      SELECT GREATEST(
+        COALESCE((SELECT MAX((substring(id from '[0-9]+$'))::bigint) FROM incidents
+                   WHERE id ~ '^INC-[0-9]{4}-[0-9]+$'), 0),
+        COALESCE((SELECT last_value FROM pg_sequences
+                   WHERE schemaname = 'public' AND sequencename = 'incident_id_seq'), 0)
+      ) INTO target;
+      IF target < 1 THEN PERFORM setval('incident_id_seq', 1, false);
+      ELSE PERFORM setval('incident_id_seq', target, true); END IF;
+
+      SELECT GREATEST(
+        COALESCE((SELECT MAX((substring(qid from '[0-9]+$'))::bigint) FROM complaints
+                   WHERE qid ~ '^QRY-[0-9]{4}-[0-9]+$'), 0),
+        COALESCE((SELECT last_value FROM pg_sequences
+                   WHERE schemaname = 'public' AND sequencename = 'complaint_qid_seq'), 0)
+      ) INTO target;
+      IF target < 1 THEN PERFORM setval('complaint_qid_seq', 1, false);
+      ELSE PERFORM setval('complaint_qid_seq', target, true); END IF;
+    END $$;
   `);
 
   const postgis = await db.oneOrNone(

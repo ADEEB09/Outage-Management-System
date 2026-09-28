@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-backend
+  labels:
+    {{- include "oms.backend.labels" . | nindent 4 }}
+spec:
+  # NOTE: if autoscaling is enabled below, the HPA takes ownership of this
+  # value at runtime -- this is just the starting point on first deploy.
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "oms.backend.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "oms.backend.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.backend.port }}
+          env:
+            - name: NODE_ENV
+              value: {{ .Values.backend.env.nodeEnv | quote }}
+            - name: PORT
+              value: {{ .Values.backend.port | quote }}
+            # DATABASE_URL, REDIS_URL, JWT secrets etc. come from a real
+            # Kubernetes Secret, never hardcoded here. Create it once with:
+            #   kubectl create secret generic oms-backend-secrets \
+            #     --from-literal=DATABASE_URL=... --from-literal=REDIS_URL=...
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecretName }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          # Liveness: is the process itself alive? If this fails repeatedly,
+          # k8s kills and restarts the pod -- a crashed/hung process
+          # shouldn't silently keep "running" and serving nothing.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.backend.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness: can THIS pod actually serve real traffic right now?
+          # Checks the DB connection. If it fails, k8s pulls this pod out
+          # of the Service's load-balancing rotation (but doesn't kill it --
+          # it might recover on its own, e.g. a brief DB blip).
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: {{ .Values.backend.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

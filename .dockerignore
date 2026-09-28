@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.git
+.gitignore
+*.log
+.env
+.env.*
+!.env.example
+dist
+**/dist
+mobile-native-fixed/node_modules
+merge-test-adeeb
+README.md

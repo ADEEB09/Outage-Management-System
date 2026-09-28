@@ -1,3 +1,4 @@
+﻿// LEGACY prototype service — not part of the deployed stack. See LEGACY.md.
 import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";

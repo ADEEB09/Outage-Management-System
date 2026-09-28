@@ -49,6 +49,7 @@ export default function IncidentSearch({ onOpen }) {
       <div className="ms-box">
         <Search size={15} />
         <input
+          aria-label="Search incidents"
           placeholder="Search incidents…"
           value={q}
           onFocus={() => setOpen(true)}
@@ -56,7 +57,7 @@ export default function IncidentSearch({ onOpen }) {
           onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}
         />
         {q && (
-          <button className="ms-clear" onMouseDown={(e) => e.preventDefault()} onClick={() => setQ('')}>
+          <button className="ms-clear" aria-label="Clear search" onMouseDown={(e) => e.preventDefault()} onClick={() => setQ('')}>
             <X size={14} />
           </button>
         )}

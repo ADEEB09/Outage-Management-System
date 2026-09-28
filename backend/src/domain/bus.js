@@ -83,7 +83,7 @@ class KafkaBus {
 const driver = (process.env.EVENT_BUS_DRIVER || 'memory').toLowerCase();
 let impl;
 if (driver === 'kafka') {
-  const brokers = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',').map((s) => s.trim());
+  const brokers = (process.env.KAFKA_BROKERS || 'localhost:19092').split(',').map((s) => s.trim());
   impl = new KafkaBus(brokers);
 } else {
   impl = new MemoryBus();

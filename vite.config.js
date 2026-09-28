@@ -1,3 +1,4 @@
+// LEGACY prototype config — not part of the deployed stack. See LEGACY.md.
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';

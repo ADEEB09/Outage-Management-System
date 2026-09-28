@@ -13,6 +13,7 @@ import Analytics from './screens/Analytics.jsx';
 import Admin from './screens/Admin.jsx';
 import IncidentSearch from './components/IncidentSearch.jsx';
 import ProfileMenu from './components/ProfileMenu.jsx';
+import AboutOverlay from './components/AboutOverlay.jsx';
 
 // Isolates a screen crash so it shows an inline message instead of blanking the
 // whole app. Resets when you navigate to another screen (keyed by `tab`).
@@ -92,6 +93,7 @@ function LiveTape() {
 export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [focusIncidentId, setFocusIncidentId] = useState(null);
+  const [showAbout, setShowAbout] = useState(false);
   const up = useConnection();
   const { items } = useToasts();
   const [clock, setClock] = useState('');
@@ -120,6 +122,9 @@ export default function App() {
           </button>
         ))}
         <div className="spacer" />
+        <button className="brand brand-btn" title="About GridQ" aria-label="About GridQ" onClick={() => setShowAbout(true)}>
+          <img src="/spintech-logo.png" alt="Sharika SpinTech" className="brand-img" />
+        </button>
       </nav>
 
       <div className="main">
@@ -176,15 +181,22 @@ export default function App() {
             </motion.div>
           </AnimatePresence>
         </div>
+
+        <div className="powered-by">
+          <img src="/spintech-logo.png" alt="" />
+          Powered by Sharika SpinTech
+        </div>
       </div>
 
-      <div className="toast-wrap">
+      <div className="toast-wrap" role="status" aria-live="polite" aria-atomic="true">
         {items.map((t) => (
-          <div key={t.id} className={`toast ${t.kind === 'err' ? 'err' : ''}`}>
+          <div key={t.id} className={`toast ${t.kind === 'err' ? 'err' : ''}`} role={t.kind === 'err' ? 'alert' : undefined}>
             <Icon name={t.kind === 'err' ? 'x' : 'check'} size={16} />{t.msg}
           </div>
         ))}
       </div>
+
+      {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} />}
     </div>
   );
 }

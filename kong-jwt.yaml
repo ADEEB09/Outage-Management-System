@@ -1,0 +1,65 @@
+# Kong JWT validation for the OMS backend.
+#
+# IMPORTANT CAVEAT: Kong's open-source jwt plugin verifies tokens against a
+# public key registered directly with Kong -- unlike the backend's own auth
+# code (routes/auth.js), it does NOT dynamically fetch keys from Keycloak's
+# JWKS endpoint (that's a Kong Enterprise feature). This means:
+#   1. If Keycloak's signing key ever rotates, this key must be updated here
+#      manually too -- it will silently go stale otherwise.
+#   2. The "key" field below must exactly match the "iss" (issuer) claim
+#      inside real tokens, which depends on what hostname/URL Keycloak
+#      thinks it's being accessed through when issuing them. If users log in
+#      via different addresses (localhost vs LAN IP vs a real domain), the
+#      issuer claim differs, and only tokens with a MATCHING issuer will
+#      validate here. For real production use, this needs to be set to
+#      whatever single, stable URL Keycloak will actually be reached at.
+#
+# Apply with: kubectl apply -f kong-jwt.yaml
+
+# --- The actual credential: Keycloak's public signing key, PEM-encoded ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oms-jwt-credential
+  labels:
+    konghq.com/credential: jwt
+type: Opaque
+stringData:
+  algorithm: RS256
+  key: "http://localhost:18080/realms/oms-upcl"
+  rsa_public_key: |
+    -----BEGIN PUBLIC KEY-----
+    MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxzBj41Yc1+PkcaiVqci6
+    2hvIB3PwSPnPXUQA7OvoHuynCsBcQ+bw1Cb/uts9RdTEZY3btNbteJ26e4t1uYnt
+    bE/K8M08f/qB76G2dRCdYi6SeSlf9ssvmbo+NWTZFz2JQHma+QnfIcRpkrQVb3DQ
+    1DEWhkqQ0Ex4oSTyPQoh17V3S0Kkp2GC8D+W3sUTZXwh5x0VaulhGMdklU5UCXer
+    Hm850QW5JJzVvIOvycSSpdW5QhK5xE34eqSGIgpNMB/w7E/dYwXg2sLLkONVWOLE
+    3tNkjYZhq10jd6LhM5DoYJNnMrYGoz7lOVE6kDDc4g/Qhfmxw6Jm8h2pOc/1QD63
+    HQIDAQAB
+    -----END PUBLIC KEY-----
+
+---
+# --- A "consumer" identity Kong attaches the credential to. Not a real
+#     user account -- Kong just needs something to hang the credential on. ---
+apiVersion: configuration.konghq.com/v1
+kind: KongConsumer
+metadata:
+  name: oms-web-app
+  annotations:
+    kubernetes.io/ingress.class: kong
+username: oms-web-app
+credentials:
+  - oms-jwt-credential
+
+---
+# --- The plugin itself. claims_to_verify checks token expiry -- a request
+#     with an expired token is rejected here, before it ever reaches the
+#     backend, rather than the backend doing that check itself every time. ---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: oms-jwt-check
+plugin: jwt
+config:
+  claims_to_verify:
+    - exp
