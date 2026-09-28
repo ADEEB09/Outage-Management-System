@@ -56,6 +56,19 @@ from a machine that has it, or generate it with `backend/tile-server/`
 (see the comments in its `docker-compose.yml`). Without it, everything else
 works; the Map tab just says the server has no offline map pack yet.
 
+Road directions (the blue route along the roads, with road distance and ETA)
+need the road graph, also in `backend/tiles/` (about 6 MB, built in ~10 s):
+
+```sh
+cd backend
+curl -L -o tile-server/uttarakhand.osm.pbf https://download.openstreetmap.fr/extracts/asia/india/uttarakhand-latest.osm.pbf
+npm run roads:build
+```
+
+With signal the app asks the backend (`GET /api/route`); without signal it
+routes on the phone from the copy downloaded with the offline map. Without
+the graph the map falls back to the dashed straight line.
+
 ## 4. Install the app
 
 Build the APK with the **`test`** profile. It is the only profile that allows

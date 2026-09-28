@@ -34,6 +34,7 @@ import { getLocation, getLastKnownLocation } from './lib/location';
 import { uploadCapturedPhoto } from './lib/photos';
 import { navigateTo } from './lib/navigate';
 import { isOnlineState, distanceAndDirection } from './lib/offlineNavigation';
+import { getRoadRoute, preloadRoadGraph, formatDistance, formatDuration } from './lib/roadRouting';
 import { openMultiJobRoute } from './lib/routing';
 import { queueUpdate, flushQueue, getQueueLength, getQueueItems } from './lib/offlineQueue';
 import { startCrewTracking, stopCrewTracking, isCrewTrackingActive } from './lib/backgroundLocation';
@@ -1322,6 +1323,46 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
 
   const guide = selectedJob ? distanceAndDirection(mapLocation, selectedJob.coordinates) : null;
 
+  // Road route to the selected job: from the server when online, else from
+  // the road graph on the phone. Recomputed when the crew has moved ~75 m,
+  // the job changes, or connectivity changes.
+  const [route, setRoute] = useState(null);
+  const routeRequest = useRef({ seq: 0, key: null, from: null });
+  useEffect(() => {
+    preloadRoadGraph(pack?.roadsUri);
+  }, [pack?.roadsUri]);
+  const target = selectedJob?.coordinates;
+  useEffect(() => {
+    const req = routeRequest.current;
+    if (!selectedId || !hasLocation || !Number.isFinite(target?.lat) || !Number.isFinite(target?.lon)) {
+      req.key = null;
+      setRoute(null);
+      return;
+    }
+    const key = `${selectedId}|${online}|${pack?.roadsUri || ''}`;
+    const moved = req.from ? distanceAndDirection(req.from, mapLocation)?.meters ?? Infinity : Infinity;
+    if (key === req.key && moved < 75) return;
+    if (key !== req.key) setRoute(null); // never show another job's route
+    req.key = key;
+    req.from = { lat: mapLocation.lat, lon: mapLocation.lon };
+    const seq = ++req.seq;
+    getRoadRoute(req.from, target, { online, roadsUri: pack?.roadsUri })
+      .then((next) => {
+        if (seq === routeRequest.current.seq) setRoute(next);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, target?.lat, target?.lon, mapLocation, online, pack?.roadsUri]);
+
+  // Frame the route the first time it arrives for a job.
+  const framedRouteFor = useRef(null);
+  useEffect(() => {
+    if (route && framedRouteFor.current !== selectedId) {
+      framedRouteFor.current = selectedId;
+      mapRef.current?.fit('guide');
+    }
+  }, [route, selectedId]);
+
   const startDownload = () => {
     downloadPack().catch(() => {}); // errors surface through packStatus
   };
@@ -1385,6 +1426,12 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
         </Pressable>
       )}
 
+      {pack?.complete && !pack.roadsUri && canDownload && (
+        <Pressable style={styles.routeAllBtn} onPress={startDownload}>
+          <Text style={styles.routeAllBtnText}>Download offline road directions</Text>
+        </Pressable>
+      )}
+
       {!navJob && jobs.length > 1 && (
         <Pressable style={styles.routeAllBtn} disabled={routing} onPress={startMultiJobRoute}>
           <Text style={styles.routeAllBtnText}>
@@ -1399,11 +1446,12 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
           pack={pack}
           crew={mapLocation}
           jobs={mapJobs}
+          route={route}
           onSelectJob={onSelect}
           onUserGesture={() => setFollowing(false)}
         />
         <Text style={styles.mapLegend}>
-          ● You  ● {navJob ? 'Site  - - Straight line to site' : 'Incidents (by severity)'}{pack?.complete && pack.totalBytes ? ` · ${formatMb(pack.totalBytes)} on device` : ''}
+          ● You  ● {navJob ? (route ? 'Site  ━ Road route' : 'Site  - - Straight line to site') : 'Incidents (by severity)'}{pack?.complete && pack.totalBytes ? ` · ${formatMb(pack.totalBytes)} on device` : ''}
         </Text>
       </View>
       <View style={styles.mapControls}>
@@ -1431,11 +1479,16 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
         <View style={styles.mapSelectedCard}>
           <Text style={styles.mapSelectedTitle}>{selectedJob.title}</Text>
           <Text style={styles.mapSelectedMeta}>{selectedJob.id} · {selectedJob.address}</Text>
-          {guide && (
+          {route ? (
             <Text style={styles.mapGuideText}>
-              {guide.label} {guide.direction} of you (straight line)
+              {formatDistance(route.meters)} by road · about {formatDuration(route.seconds)}
+              {route.source === 'device' ? ' · offline directions' : ''}
             </Text>
-          )}
+          ) : guide ? (
+            <Text style={styles.mapGuideText}>
+              {guide.label} {guide.direction} of you (straight line{hasLocation && !pack?.roadsUri && !online ? ' — download road directions for a road route' : ''})
+            </Text>
+          ) : null}
           {navJob ? (
             <>
               {!online && (
@@ -1463,7 +1516,9 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
                 <Text style={styles.mapOfflineNoteTitle}>No internet — follow the offline map</Text>
                 <Text style={styles.mapOfflineNoteText}>
                   {hasLocation
-                    ? 'The dashed line points from you to the site. Use the streets on the map to get there; your position keeps updating without signal.'
+                    ? route
+                      ? 'Follow the blue road route to the site; your position keeps updating without signal.'
+                      : 'The dashed line points from you to the site. Use the streets on the map to get there; your position keeps updating without signal.'
                     : 'Waiting for a GPS fix to show the way from you to the site.'}
                 </Text>
               </View>

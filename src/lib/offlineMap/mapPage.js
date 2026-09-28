@@ -34,7 +34,11 @@ const PAGE_SCRIPT = `
   var jobLayer = L.layerGroup().addTo(map);
   var crewMarker = null, crewAccuracy = null;
   var guideLine = null; // dashed straight line from the crew to the selected job
-  var state = { pack: null, crew: null, jobs: [] };
+  // Road route to the selected job, drawn under the markers in its own pane.
+  map.createPane('route').style.zIndex = 350;
+  var routeRenderer = L.canvas({ pane: 'route' });
+  var routeCasing = null, routeLine = null, routeKey = null;
+  var state = { pack: null, crew: null, jobs: [], route: null };
   var hasFramed = false;
 
   function post(msg) {
@@ -162,9 +166,26 @@ const PAGE_SCRIPT = `
     return (state.jobs || []).filter(function (j) { return j.selected && finite(j.lat) && finite(j.lon); })[0] || null;
   }
 
+  function routeCoords() {
+    var r = state.route;
+    return r && r.coords && r.coords.length >= 2 && selectedJob() ? r.coords : null;
+  }
+
+  function applyRoute() {
+    var coords = routeCoords();
+    var key = coords ? coords.length + ':' + coords[0] + ':' + coords[coords.length - 1] : null;
+    if (key === routeKey) return;
+    routeKey = key;
+    if (routeCasing) { map.removeLayer(routeCasing); map.removeLayer(routeLine); routeCasing = routeLine = null; }
+    if (!coords) return;
+    routeCasing = L.polyline(coords, { renderer: routeRenderer, color: '#ffffff', weight: 9, opacity: 0.95, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(map);
+    routeLine = L.polyline(coords, { renderer: routeRenderer, color: '#1a73e8', weight: 5, opacity: 1, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(map);
+  }
+
+  // The dashed straight line is only the fallback when there is no road route.
   function applyGuide() {
     var c = state.crew, sel = selectedJob();
-    if (!c || !finite(c.lat) || !finite(c.lon) || !sel) {
+    if (!c || !finite(c.lat) || !finite(c.lon) || !sel || routeCoords()) {
       if (guideLine) { map.removeLayer(guideLine); guideLine = null; }
       return;
     }
@@ -184,7 +205,9 @@ const PAGE_SCRIPT = `
     if (kind === 'crew' && c && finite(c.lat)) return map.setView([c.lat, c.lon], Math.max(map.getZoom(), 15));
     var sel = selectedJob();
     if (kind === 'job' && sel) return map.setView([sel.lat, sel.lon], Math.max(map.getZoom(), 15));
-    // Frame both ends of the guide line so the crew sees the whole way there.
+    // Frame the whole road route, or both ends of the guide line.
+    var rc = routeCoords();
+    if (kind === 'guide' && sel && rc) return map.fitBounds(L.latLngBounds(rc), { padding: [40, 40], maxZoom: 16 });
     if (kind === 'guide' && sel) {
       if (c && finite(c.lat)) return map.fitBounds(L.latLngBounds([[c.lat, c.lon], [sel.lat, sel.lon]]), { padding: [48, 48], maxZoom: 16 });
       return map.setView([sel.lat, sel.lon], Math.max(map.getZoom(), 15));
@@ -211,6 +234,7 @@ const PAGE_SCRIPT = `
       applyPack(state.pack);
       applyJobs(state.jobs);
       applyCrew(state.crew);
+      applyRoute();
       applyGuide();
       if (!hasFramed) {
         var c = state.crew, pb = packBounds(state.pack);

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { repo } from '../infra/repo.js';
@@ -9,6 +9,7 @@ import { canTransition, nextStates, LABELS } from '../domain/lifecycle.js';
 import { computeIndices, computeMTTR, computeSLACompliance, computeCrewProductivity, computeOutageFrequency } from '../domain/indices.js';
 import { buildCsv, buildPdf } from '../domain/reports.js';
 import { MAX_LOCATION_BATCH, parseLocationBatch, newestLivePoint, parseTileParams } from '../domain/locations.js';
+import { createRouter } from '../domain/roadRouter.js';
 import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
@@ -601,6 +602,48 @@ api.get('/tiles/manifest', (req, res) => {
   res.sendFile('manifest.json', { root: TILES_DIR }, (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: 'offline map pack has not been generated on the server' });
   });
+});
+
+// Road graph for offline routing on the phone (scripts/build-road-graph.mjs).
+api.get('/tiles/roads.json', (req, res) => {
+  res.sendFile('roads.json', { root: TILES_DIR, maxAge: '1d' }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'road graph has not been generated on the server' });
+  });
+});
+
+// Road route between two points, e.g. /route?from=30.3243,78.0418&to=30.3476,78.0808
+// Same graph and code the phone uses offline, so both give the same route.
+// Reloads the graph when roads.json is regenerated.
+let roadRouter = null;
+let roadRouterMtime = 0;
+function getRoadRouter() {
+  const file = join(TILES_DIR, 'roads.json');
+  let mtime;
+  try {
+    mtime = statSync(file).mtimeMs;
+  } catch {
+    return null;
+  }
+  if (!roadRouter || mtime !== roadRouterMtime) {
+    roadRouter = createRouter(JSON.parse(readFileSync(file, 'utf8')));
+    roadRouterMtime = mtime;
+  }
+  return roadRouter;
+}
+const parsePoint = (value) => {
+  const [lat, lon] = String(value ?? '').split(',').map(Number);
+  return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+};
+
+api.get('/route', (req, res) => {
+  const from = parsePoint(req.query.from);
+  const to = parsePoint(req.query.to);
+  if (!from || !to) return res.status(400).json({ error: 'from and to must be "lat,lon"' });
+  const router = getRoadRouter();
+  if (!router) return res.status(503).json({ error: 'road graph has not been generated on the server' });
+  const route = router.route(from, to);
+  if (!route) return res.status(404).json({ error: 'no road route between these points (outside the mapped area?)' });
+  res.json({ ...route, source: 'server' });
 });
 
 api.get('/tiles/:z/:x/:y.png', (req, res) => {

@@ -26,7 +26,7 @@
 // re-download when tiles actually changed.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // [west, south, east, north]. City regions get street-level detail; the
@@ -198,11 +198,17 @@ async function main() {
     tileCount: count,
     totalBytes: bytes,
   };
+  // Keep the road graph entry written by build-road-graph.mjs.
+  const previous = await readFile(join(OUT, 'manifest.json'), 'utf8').then(JSON.parse, () => null);
+  if (previous?.roads) manifest.roads = previous.roads;
   await writeAtomic(join(OUT, 'manifest.json'), Buffer.from(JSON.stringify(manifest, null, 2)));
   console.log(`Pack ${version}: ${count} tiles, ${(bytes / 1048576).toFixed(1)} MB -> ${OUT}`);
 }
 
-main().catch((err) => {
-  console.error(`\n${err.message}`);
-  process.exit(1);
-});
+// Only when run directly: build-road-graph.mjs imports REGIONS from here.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(`\n${err.message}`);
+    process.exitCode = 1;
+  });
+}

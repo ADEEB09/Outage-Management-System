@@ -23,7 +23,7 @@ import 'dotenv/config';
 import express from 'express';
 import pgPromise from 'pg-promise';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ import {
   newestLivePoint,
   parseTileParams,
 } from '../src/domain/locations.js';
+import { createRouter } from '../src/domain/roadRouter.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MAP_TEST_PORT || 4100);
@@ -126,6 +127,34 @@ api.get('/tiles/:z/:x/:y.png', (req, res) => {
   res.sendFile(`${tile.z}/${tile.x}/${tile.y}.png`, { root: TILES_DIR, maxAge: '1d', dotfiles: 'deny' }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
   });
+});
+
+// ---- road graph + road routing (same routes as the real backend, no auth)
+api.get('/tiles/roads.json', (req, res) => {
+  res.sendFile('roads.json', { root: TILES_DIR }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'No road graph yet — run `npm run roads:build` in backend/.' });
+  });
+});
+
+let router = null;
+let routerMtime = 0;
+api.get('/route', (req, res) => {
+  const point = (v) => {
+    const [lat, lon] = String(v ?? '').split(',').map(Number);
+    return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+  };
+  const from = point(req.query.from), to = point(req.query.to);
+  if (!from || !to) return res.status(400).json({ error: 'from and to must be "lat,lon"' });
+  const file = join(TILES_DIR, 'roads.json');
+  if (!existsSync(file)) return res.status(503).json({ error: 'No road graph yet — run `npm run roads:build` in backend/.' });
+  const mtime = statSync(file).mtimeMs;
+  if (!router || mtime !== routerMtime) {
+    router = createRouter(JSON.parse(readFileSync(file, 'utf8')));
+    routerMtime = mtime;
+  }
+  const route = router.route(from, to);
+  if (!route) return res.status(404).json({ error: 'no road route between these points' });
+  res.json({ ...route, source: 'server' });
 });
 
 // ---- batched GPS upload (same contract as the real backend)

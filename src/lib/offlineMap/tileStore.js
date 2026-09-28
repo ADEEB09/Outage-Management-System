@@ -26,6 +26,7 @@ const VERSION_RE = /^[a-f0-9]{8,64}$/;
 
 export const mapRoot = () => new Directory(Paths.document, "offline-map");
 const packDir = (version) => new Directory(mapRoot(), `tiles-${version}`);
+const roadsFile = (version) => new File(mapRoot(), `roads-${version}.json`);
 const withSlash = (uri) => (uri.endsWith("/") ? uri : uri + "/");
 
 // ---- installed pack state -------------------------------------------------
@@ -51,7 +52,13 @@ export async function getInstalledPack() {
   if (!state?.version || !VERSION_RE.test(state.version)) return null;
   const dir = packDir(state.version);
   if (!dir.exists) return null;
-  return { ...state, tileUrl: withSlash(dir.uri) + "{z}/{x}/{y}.png" };
+  const roads = state.roads?.version && VERSION_RE.test(state.roads.version) ? roadsFile(state.roads.version) : null;
+  return {
+    ...state,
+    tileUrl: withSlash(dir.uri) + "{z}/{x}/{y}.png",
+    // Road graph for offline routing (lib/roadRouting.js), when downloaded.
+    roadsUri: roads?.exists ? roads.uri : null,
+  };
 }
 
 // ---- status broadcast -----------------------------------------------------
@@ -113,6 +120,41 @@ async function fetchManifest(headers) {
   return manifest;
 }
 
+// ---- road graph -----------------------------------------------------------
+
+// Downloads the pack's road graph (for offline routing) if the server has
+// one and it isn't on the phone yet, then records it in the pack state and
+// removes superseded copies. The file name carries the version, so an
+// interrupted download never leaves a stale graph in use.
+async function ensureRoads(manifest, headers, signal) {
+  const want = manifest.roads;
+  if (!want?.version || !VERSION_RE.test(want.version)) return;
+  const dest = roadsFile(want.version);
+  if (!dest.exists) {
+    const part = new File(mapRoot(), `roads-${want.version}.json.part`);
+    if (part.exists) part.delete();
+    try {
+      await File.downloadFileAsync(`${mapApiBase()}/tiles/roads.json`, part, { headers, idempotent: true, signal });
+      part.moveSync(dest);
+    } catch (err) {
+      if (part.exists) part.delete();
+      if (err?.name === "AbortError" || signal.aborted) throw err;
+      throw new Error("The road network for offline directions failed to download — tap retry.");
+    }
+  }
+  const state = await readState();
+  if (state) await writeState({ ...state, roads: { version: want.version, bytes: want.bytes } });
+  for (const entry of mapRoot().list()) {
+    if (entry instanceof File && /^roads-[a-f0-9]+\.json$/.test(entry.name) && entry.name !== dest.name) {
+      try {
+        entry.delete();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
 // ---- download -------------------------------------------------------------
 
 let running = null;
@@ -145,6 +187,7 @@ async function doDownload(signal) {
     const manifest = await fetchManifest(headers);
     const installed = await readState();
     if (installed?.version === manifest.version && installed.complete && packDir(manifest.version).exists) {
+      await ensureRoads(manifest, headers, signal);
       setStatus({ phase: "ready", done: installed.tileCount, total: installed.tileCount });
       return getInstalledPack();
     }
@@ -236,6 +279,7 @@ async function doDownload(signal) {
     }
 
     await writeState({ ...packMeta, complete: true, installedAt: Date.now() });
+    await ensureRoads(manifest, await authHeaders(true), signal);
     // Remove superseded packs only after the new one is fully in place.
     for (const entry of mapRoot().list()) {
       if (entry instanceof Directory && entry.name.startsWith("tiles-") && entry.name !== `tiles-${manifest.version}`) {
