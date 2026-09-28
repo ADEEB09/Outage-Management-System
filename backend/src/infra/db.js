@@ -191,6 +191,27 @@ export async function migrate() {
     ALTER TABLE job_photos ALTER COLUMN data_url DROP NOT NULL;
   `);
 
+  // Crew GPS breadcrumb trail. Points are recorded on the phone (possibly
+  // while offline) and uploaded later in batches, so each row carries the
+  // device-side recorded_at plus a client-generated id that makes retried
+  // uploads idempotent. crews.location_updated_at guards the live position
+  // against being overwritten by an older, late-arriving backfill batch.
+  await db.none(`
+    CREATE TABLE IF NOT EXISTS crew_locations (
+      id           TEXT PRIMARY KEY,
+      crew_id      TEXT NOT NULL,
+      lat          DOUBLE PRECISION NOT NULL,
+      lon          DOUBLE PRECISION NOT NULL,
+      accuracy     REAL,
+      speed        REAL,
+      heading      REAL,
+      recorded_at  TIMESTAMPTZ NOT NULL,
+      received_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS crew_locations_crew_time_idx ON crew_locations(crew_id, recorded_at DESC);
+    ALTER TABLE crews ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
+  `);
+
   const postgis = await db.oneOrNone(
     "SELECT 1 FROM pg_extension WHERE extname = 'postgis'"
   );

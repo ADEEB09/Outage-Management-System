@@ -19,11 +19,15 @@
     },
     "production": {
       "autoIncrement": true
+    },
+    "test": {
+      "extends": "preview",
+      "env": {
+        "OMS_ALLOW_CLEARTEXT": "1"
+      }
     }
   },
   "submit": {
     "production": {}
   }
 }
-
-

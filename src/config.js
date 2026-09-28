@@ -3,7 +3,7 @@
 //
 // During development your phone/emulator must be able to reach the backend.
 // Use your computer's LAN IP (find it with `ipconfig` on Windows or
-// `ifconfig`/`ip a` on mac/Linux) Ã¢â‚¬â€ a physical phone can't see the PC's
+// `ifconfig`/`ip a` on mac/Linux) — a physical phone can't see the PC's
 // "localhost". Android emulators should use 10.0.2.2 instead.
 //
 // In production these should come from EAS build profiles / env vars
@@ -24,3 +24,13 @@ export const KEYCLOAK_URL = isAndroidEmulator
 export const REALM = "oms-upcl";
 export const CLIENT_ID = "oms-mobile";
 export const REDIRECT_SCHEME = "omscrew";
+
+// Standalone map/tracking test server (backend/map-test-server, started with
+// `npm run map:test-server` in backend/). When set, the offline map pack and
+// GPS uploads go here WITHOUT a Keycloak login, so both features can be
+// tested while the app runs in demo mode. It prints the exact URL to use on
+// startup. MUST be null in production builds — the test server has no auth.
+export const MAP_TEST_SERVER = "http://192.168.0.115:4100/api";
+
+// Where the offline map pack and GPS uploads go.
+export const MAP_API_BASE = MAP_TEST_SERVER || API_BASE;

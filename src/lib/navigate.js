@@ -2,8 +2,14 @@
 // Opens the native maps app on mobile and a browser maps link on web.
 import { Linking, Platform } from "react-native";
 
-export function navigateTo(address) {
-  const q = encodeURIComponent(address);
+const finite = (n) => typeof n === "number" && Number.isFinite(n);
+
+// Coordinates are preferred over the address: Google Maps can route to a
+// lat,lon with no internet if the crew downloaded that area as an offline
+// map, whereas an address needs an online lookup first.
+export function navigateTo(address, coords) {
+  const hasCoords = finite(coords?.lat) && finite(coords?.lon);
+  const q = hasCoords ? `${coords.lat},${coords.lon}` : encodeURIComponent(address);
   const mapsUrl = "https://www.google.com/maps/dir/?api=1&destination=" + q;
 
   if (Platform.OS === "web") {
