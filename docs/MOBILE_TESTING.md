@@ -51,7 +51,8 @@ for LAN testing only; production needs HTTPS and `external`.
 ## 3. Offline map pack (optional)
 
 The map downloads its tiles from the backend (`GET /api/tiles/*`, served from
-`backend/tiles/`). That folder is not in git (about 40 MB). Either copy it
+`backend/tiles/`). That folder is not in git (about 120 MB: WebP tiles
+rendered at 2x so the map stays sharp on phone screens). Either copy it
 from a machine that has it, or generate it with `backend/tile-server/`
 (see the comments in its `docker-compose.yml`). Without it, everything else
 works; the Map tab just says the server has no offline map pack yet.

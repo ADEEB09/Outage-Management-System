@@ -646,10 +646,10 @@ api.get('/route', (req, res) => {
   res.json({ ...route, source: 'server' });
 });
 
-api.get('/tiles/:z/:x/:y.png', (req, res) => {
+api.get('/tiles/:z/:x/:y.:ext(png|webp)', (req, res) => {
   const tile = parseTileParams(req.params);
   if (!tile) return res.status(400).json({ error: 'invalid tile' });
-  res.sendFile(`${tile.z}/${tile.x}/${tile.y}.png`, { root: TILES_DIR, maxAge: '1d', dotfiles: 'deny' }, (err) => {
+  res.sendFile(`${tile.z}/${tile.x}/${tile.y}.${req.params.ext}`, { root: TILES_DIR, maxAge: '1d', dotfiles: 'deny' }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
   });
 });

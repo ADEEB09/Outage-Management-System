@@ -1,7 +1,7 @@
 // src/lib/offlineMap/tileStore.js
 // Downloads the offline map tile pack from the OMS backend onto the phone
 // and tracks which pack is installed. Tiles land on disk as
-// <documents>/offline-map/tiles-<version>/{z}/{x}/{y}.png, which the Leaflet
+// <documents>/offline-map/tiles-<version>/{z}/{x}/{y}.<png|webp>, which the Leaflet
 // WebView then reads straight from the filesystem — no network, no JS
 // bridge per tile.
 //
@@ -26,6 +26,8 @@ const VERSION_RE = /^[a-f0-9]{8,64}$/;
 
 export const mapRoot = () => new Directory(Paths.document, "offline-map");
 const packDir = (version) => new Directory(mapRoot(), `tiles-${version}`);
+// Tile file extension for a pack (packs from before WebP support are PNG).
+const tileExt = (format) => (format === "webp" ? "webp" : "png");
 const roadsFile = (version) => new File(mapRoot(), `roads-${version}.json`);
 const withSlash = (uri) => (uri.endsWith("/") ? uri : uri + "/");
 
@@ -55,7 +57,7 @@ export async function getInstalledPack() {
   const roads = state.roads?.version && VERSION_RE.test(state.roads.version) ? roadsFile(state.roads.version) : null;
   return {
     ...state,
-    tileUrl: withSlash(dir.uri) + "{z}/{x}/{y}.png",
+    tileUrl: withSlash(dir.uri) + `{z}/{x}/{y}.${tileExt(state.format)}`,
     // Road graph for offline routing (lib/roadRouting.js), when downloaded.
     roadsUri: roads?.exists ? roads.uri : null,
   };
@@ -200,7 +202,9 @@ async function doDownload(signal) {
 
     const target = packDir(manifest.version);
     target.create({ intermediates: true, idempotent: true });
+    const ext = tileExt(manifest.format);
     const packMeta = {
+      format: ext,
       version: manifest.version,
       attribution: String(manifest.attribution || ""),
       minZoom: manifest.minZoom,
@@ -233,18 +237,18 @@ async function doDownload(signal) {
     setStatus({ phase: "downloading", done, total: tiles.length });
 
     const fetchOne = async ({ z, x, y }) => {
-      const dest = new File(target, String(z), String(x), `${y}.png`);
+      const dest = new File(target, String(z), String(x), `${y}.${ext}`);
       if (dest.exists && dest.size > 0) return;
       const dirKey = `${z}/${x}`;
       if (!madeDirs.has(dirKey)) {
         new Directory(target, String(z), String(x)).create({ intermediates: true, idempotent: true });
         madeDirs.add(dirKey);
       }
-      const part = new File(target, String(z), String(x), `${y}.png.part`);
+      const part = new File(target, String(z), String(x), `${y}.${ext}.part`);
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (signal.aborted) throw Object.assign(new Error("cancelled"), { name: "AbortError" });
         try {
-          await File.downloadFileAsync(`${mapApiBase()}/tiles/${z}/${x}/${y}.png`, part, {
+          await File.downloadFileAsync(`${mapApiBase()}/tiles/${z}/${x}/${y}.${ext}`, part, {
             headers: await authHeaders(attempt > 1),
             idempotent: true,
             signal,

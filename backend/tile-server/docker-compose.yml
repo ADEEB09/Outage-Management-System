@@ -8,12 +8,15 @@
 #        curl -L -o uttarakhand.osm.pbf https://download.openstreetmap.fr/extracts/asia/india/uttarakhand-latest.osm.pbf
 #   2. Import it into the renderer's database (~10–30 min, first time only):
 #        docker compose run --rm import
-#   3. Start the renderer:
-#        docker compose up -d tiles
-#   4. Generate the pack (from backend/):
-#        TILE_SOURCE_URL="http://localhost:8090/tile/{z}/{x}/{y}.png" npm run tiles:fetch
+#   3. Start the HD (2x) renderer — sharp on phone screens:
+#        docker compose up -d tiles-hd
+#   4. Generate the pack (from backend/), then the road graph:
+#        TILE_SOURCE_URL="http://localhost:8091/tile/{z}/{x}/{y}.png" TILE_FORMAT=webp npm run tiles:fetch
+#        npm run roads:build
 #   5. Stop it again — it's not needed at runtime:
-#        docker compose stop tiles
+#        docker compose stop tiles-hd
+#   (The plain `tiles` service on 8090 renders the older standard-resolution
+#    PNG pack, if ever needed.)
 #
 # Map data © OpenStreetMap contributors (ODbL); the app shows this credit.
 services:
@@ -35,6 +38,23 @@ services:
       THREADS: 8
     ports:
       - "127.0.0.1:8090:80" # localhost only; 8080 is taken by Keycloak
+    volumes:
+      - osm-data:/data/database/
+    shm_size: 256m
+
+  # Same map, rendered at 2x for phone screens (512 px tiles, labels and
+  # lines scaled to match), so it stays sharp on high-density displays.
+  # Uses the same imported database as `tiles`. Generate the HD pack with:
+  #   TILE_SOURCE_URL="http://localhost:8091/tile/{z}/{x}/{y}.png" TILE_FORMAT=webp npm run tiles:fetch
+  tiles-hd:
+    image: overv/openstreetmap-tile-server:latest
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - sed -i -E 's/^TILESIZE=.*/TILESIZE=512\nSCALE=2.0/' /etc/renderd.conf && exec /run.sh run
+    environment:
+      THREADS: 8
+    ports:
+      - "127.0.0.1:8091:80"
     volumes:
       - osm-data:/data/database/
     shm_size: 256m
