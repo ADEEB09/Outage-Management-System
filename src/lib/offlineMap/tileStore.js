@@ -16,7 +16,7 @@
 // crew switches away from the Map tab.
 import { Directory, File, Paths } from "expo-file-system";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { MAP_API_BASE, mapServerHeaders } from "../mapServer";
+import { mapApiBase, mapServerHeaders } from "../mapServer";
 
 const STATE_KEY = "oms-offline-map-pack";
 const CONCURRENCY = 6;
@@ -105,7 +105,7 @@ function tilesForManifest(manifest) {
 }
 
 async function fetchManifest(headers) {
-  const response = await fetch(`${MAP_API_BASE}/tiles/manifest`, { headers });
+  const response = await fetch(`${mapApiBase()}/tiles/manifest`, { headers });
   if (response.status === 404) throw new Error("The server has no offline map pack yet (run tiles:fetch on the backend).");
   if (!response.ok) throw new Error(`Could not load the offline map manifest (HTTP ${response.status}).`);
   const manifest = await response.json();
@@ -201,7 +201,7 @@ async function doDownload(signal) {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (signal.aborted) throw Object.assign(new Error("cancelled"), { name: "AbortError" });
         try {
-          await File.downloadFileAsync(`${MAP_API_BASE}/tiles/${z}/${x}/${y}.png`, part, {
+          await File.downloadFileAsync(`${mapApiBase()}/tiles/${z}/${x}/${y}.png`, part, {
             headers: await authHeaders(attempt > 1),
             idempotent: true,
             signal,

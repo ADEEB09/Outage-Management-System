@@ -6,15 +6,12 @@
 //
 // This file works for BOTH builds:
 //   - Web (Vite):        relative "/api/..." calls, cookie session (credentials: include)
-//   - Native (Expo/RN):  absolute API_BASE calls, Keycloak bearer token
+//   - Native (Expo/RN):  absolute calls to the configured server (lib/server.js), Keycloak bearer token
 // `Platform.OS` (via react-native-web on the web build) tells us which mode
 // we're in, so screens can share the exact same function signatures.
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { API_BASE, PHOTO_API_BASE } from "../config";
-console.log("DEBUG_API_BASE", API_BASE, "DEBUG_PHOTO_BASE", PHOTO_API_BASE);
-console.log("🔍 DEBUG — API_BASE is:", API_BASE);
-console.log("🔍 DEBUG — PHOTO_API_BASE is:", PHOTO_API_BASE);
+import { apiBase, loadServer } from "./server";
 const IS_WEB = Platform.OS === "web";
 const WEB_API_URL = "/api";
 const JOBS_CACHE_KEY = "oms-jobs-cache";
@@ -97,21 +94,11 @@ async function webReq(path, method = "GET", body) {
 // Native: absolute backend URL, Keycloak bearer token (per the OMS mobile guide).
 async function nativeReq(path, method = "GET", body) {
   const { authHeader } = await nativeAuth();
-  const response = await fetch(API_BASE + path, {
+  await loadServer();
+  const response = await fetch(apiBase() + path, {
     method,
     headers: { "Content-Type": "application/json", ...authHeader() },
     body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
-async function photoReq(path, body) {
-  const { authHeader } = await nativeAuth();
-  const response = await fetch(PHOTO_API_BASE + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeader() },
-    body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
@@ -146,13 +133,16 @@ function normalizeOmsJob(job) {
 // Web:    GET /api/me                         (cookie session)
 // Native: GET /api/mobile/crews/:crewId        (Keycloak bearer token)
 export async function getCurrentCrew() {
+  if (IS_WEB) return webReq("/me").catch(() => DEMO_CREW);
+  const { isAuthenticated, myCrewId, currentUsername } = await nativeAuth();
+  if (!isAuthenticated()) return DEMO_CREW;
   try {
-    if (IS_WEB) return await webReq("/me");
-    const { isAuthenticated, myCrewId } = await nativeAuth();
-    if (!isAuthenticated()) return DEMO_CREW;
     return await nativeReq("/mobile/crews/" + myCrewId());
   } catch {
-    return DEMO_CREW;
+    // Signed in but the backend is unreachable: keep the real identity
+    // (so tracking and uploads still go to the right crew) rather than
+    // passing the demo crew off as the tester's own.
+    return { ...DEMO_CREW, id: myCrewId(), name: currentUsername() || myCrewId(), lead: "", skills: [] };
   }
 }
 
@@ -175,11 +165,14 @@ export async function getMyJobs() {
     await cacheJobs(mapped);
     return mapped;
   } catch {
-    // No connectivity / backend unreachable — prefer the last real
-    // synced job list (offline-ready data) over the static demo set,
-    // so the crew still sees their actual last-known assignments.
+    // No connectivity / backend unreachable — show the last real synced
+    // job list (offline-ready data) so the crew still sees their actual
+    // last-known assignments. A signed-in crew never gets the demo set:
+    // sample jobs would look like real work and hide the outage.
     const cached = await readCachedJobs();
-    return cached && cached.length ? cached : demoJobs;
+    if (cached && cached.length) return cached;
+    const signedIn = !IS_WEB && (await nativeAuth()).isAuthenticated();
+    return signedIn ? [] : demoJobs;
   }
 }
 
@@ -219,7 +212,7 @@ export async function uploadJobPhoto(id, dataUrl, location = {}, note, metadata 
       ...metadata,
     });
   }
-  return photoReq(`/mobile/jobs/${id}/photos`, {
+  return nativeReq(`/mobile/jobs/${id}/photos`, "POST", {
     dataUrl,
     lat: location.lat ?? null,
     lon: location.lon ?? null,
@@ -260,4 +253,6 @@ export async function logout() {
   }
   const { logout: authLogout } = await import("./auth");
   await authLogout();
+  // The cached job list belongs to the crew that just signed out.
+  await AsyncStorage.multiRemove([JOBS_CACHE_KEY, JOBS_CACHE_SYNCED_AT_KEY]).catch(() => {});
 }

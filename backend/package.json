@@ -10,7 +10,8 @@
     "seed": "node src/infra/seed.js",
     "test": "node src/selftest.js",
     "tiles:fetch": "node scripts/fetch-tiles.mjs",
-    "map:test-server": "node map-test-server/server.mjs"
+    "map:test-server": "node map-test-server/server.mjs",
+    "keycloak:mobile": "node scripts/setup-mobile-keycloak.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -7,6 +7,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView, SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,7 +17,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import * as Network from 'expo-network';
 import {
-  discovery,
+  getDiscovery,
   redirectUri,
   login,
   restoreSession,
@@ -27,7 +28,7 @@ import {
 } from './lib/auth';
 import { biometricUnlock } from './lib/biometric';
 import { getLockoutStatus, recordFailedAttempt, resetAttempts as resetLoginAttempts, MAX_ATTEMPTS, LOCKOUT_MS } from './lib/lockout';
-import { CLIENT_ID } from './config';
+import { API_PORT, CLIENT_ID, KEYCLOAK_PORT } from './config';
 import { getCurrentCrew, getMyJobs, updateJobStatus, getJobsLastSyncedAt, getJobMessages, getJobPhotos, getCrewMessages, saveAssetScan, getAssetScans } from './lib/api.js';
 import { getLocation, getLastKnownLocation } from './lib/location';
 import { uploadCapturedPhoto } from './lib/photos';
@@ -40,6 +41,7 @@ import { flushLocations, getPendingLocationCount } from './lib/locationQueue';
 import { downloadPack, cancelPackDownload, getInstalledPack, getPackStatus, subscribePackStatus } from './lib/offlineMap/tileStore';
 import OfflineMap from './components/OfflineMap';
 import { usingMapTestServer } from './lib/mapServer';
+import { checkServer, getServer, setServer } from './lib/server';
 import SafetyChecklist from './components/SafetyChecklist';
 import QrScanner from './components/QrScanner';
 import * as PriorityChecklistModule from './components/PriorityChecklist';
@@ -650,6 +652,11 @@ function NativeJobsPage({ jobs, onPressJob }) {
 }
 
 function CrewLogin({ onSuccess }) {
+  // The server was loaded from storage before this screen (restoreSession).
+  const [server, setServerHost] = useState(getServer);
+  const [serverDraft, setServerDraft] = useState(getServer);
+  const [serverCheck, setServerCheck] = useState(null); // null | 'checking' | { api, keycloak } | { error }
+  const discovery = useMemo(() => getDiscovery(), [server]);
   const [request, , promptAsync] = AuthSession.useAuthRequest(
     {
       clientId: CLIENT_ID,
@@ -710,9 +717,21 @@ function CrewLogin({ onSuccess }) {
     } catch {
       const status = await recordFailedAttempt();
       setLockStatus(status);
-      setError('Could not reach the sign-in server. Check your connection and API_BASE/KEYCLOAK_URL in config.js.');
+      setError(`Could not reach the sign-in server at ${server}. Tap "Check" below to see what is unreachable.`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const saveAndCheckServer = async () => {
+    setServerCheck('checking');
+    try {
+      const host = await setServer(serverDraft);
+      setServerHost(host);
+      setServerDraft(host);
+      setServerCheck(await checkServer());
+    } catch (err) {
+      setServerCheck({ error: err.message });
     }
   };
 
@@ -721,7 +740,7 @@ function CrewLogin({ onSuccess }) {
   return (
     <SafeAreaView style={styles.loginSafe}>
       <StatusBar barStyle="light-content" backgroundColor="#10201d" />
-      <View style={styles.login}>
+      <ScrollView contentContainerStyle={styles.login} keyboardShouldPersistTaps="handled">
         <Text style={styles.loginKicker}>OMS CREW</Text>
         <Text style={styles.loginTitle}>Crew sign in</Text>
         <Text style={styles.loginSubtitle}>Access your field operations workspace.</Text>
@@ -760,12 +779,46 @@ function CrewLogin({ onSuccess }) {
         </Text>
 
         <View style={styles.demo}>
-          <Text style={styles.demoLabel}>USES YOUR OMS ACCOUNT</Text>
-          <Text style={styles.demoText}>Realm: oms-upcl · Client: oms-mobile</Text>
-          <Text style={styles.demoPassword}>Configured in src/config.js</Text>
+          <Text style={styles.demoLabel}>OMS SERVER</Text>
+          <View style={styles.serverRow}>
+            <TextInput
+              style={styles.serverInput}
+              value={serverDraft}
+              onChangeText={(text) => {
+                setServerDraft(text);
+                setServerCheck(null);
+              }}
+              placeholder="192.168.1.20"
+              placeholderTextColor="#5f7b74"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              returnKeyType="done"
+              onSubmitEditing={saveAndCheckServer}
+              editable={!busy}
+            />
+            <Pressable style={styles.serverBtn} onPress={saveAndCheckServer} disabled={busy || serverCheck === 'checking'}>
+              <Text style={styles.serverBtnText}>{serverCheck === 'checking' ? '…' : 'Check'}</Text>
+            </Pressable>
+          </View>
+          {serverCheck && serverCheck !== 'checking' ? (
+            serverCheck.error ? (
+              <Text style={styles.error}>{serverCheck.error}</Text>
+            ) : (
+              <>
+                <Text style={styles.demoPassword}>
+                  {serverCheck.api ? '✓' : '✗'} Backend :{API_PORT}   {serverCheck.keycloak ? '✓' : '✗'} Keycloak :{KEYCLOAK_PORT}
+                </Text>
+                {!serverCheck.api || !serverCheck.keycloak ? (
+                  <Text style={styles.error}>Not reachable — check the IP, that the service is running, and the PC firewall.</Text>
+                ) : null}
+              </>
+            )
+          ) : null}
+          <Text style={styles.demoPassword}>Realm: oms-upcl · Client: oms-mobile</Text>
         </View>
         <Text style={styles.loginFooter}>Crew access only · Offline capable</Text>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -1460,9 +1513,9 @@ function ProfileScreen({ crew, jobs, onLogout }) {
 
 const styles = StyleSheet.create({
   loginSafe: { flex: 1, backgroundColor: '#10201d' },
-  login: { flex: 1, paddingHorizontal: 24, paddingTop: 64 },
+  login: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 48 },
   loginKicker: { color: '#27c7b2', fontSize: 13, fontWeight: '800', letterSpacing: 2 },
-  loginTitle: { color: '#fff', fontSize: 32, fontWeight: '800', marginTop: 70 },
+  loginTitle: { color: '#fff', fontSize: 32, fontWeight: '800', marginTop: 40 },
   loginSubtitle: { color: '#a8c0ba', fontSize: 14, marginTop: 8, marginBottom: 36 },
   label: { color: '#d8e7e2', fontSize: 11, fontWeight: '800', letterSpacing: 1, marginTop: 16, marginBottom: 8 },
   error: { color: '#ffb5a8', fontSize: 12, marginTop: 10 },
@@ -1481,6 +1534,10 @@ const styles = StyleSheet.create({
   demoLabel: { color: '#7f9b94', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   demoText: { color: '#d8e7e2', fontSize: 13, fontWeight: '700', marginTop: 8 },
   demoPassword: { color: '#8eaaa2', fontSize: 12, marginTop: 4 },
+  serverRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  serverInput: { flex: 1, color: '#fff', fontSize: 14, borderWidth: 1, borderColor: '#2f4a44', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
+  serverBtn: { backgroundColor: '#2f4a44', borderRadius: 8, paddingHorizontal: 14, justifyContent: 'center' },
+  serverBtnText: { color: '#d8e7e2', fontSize: 13, fontWeight: '800' },
   loginFooter: { color: '#77938c', fontSize: 11, textAlign: 'center', marginTop: 'auto', paddingBottom: 24 },
   safe: { flex: 1, backgroundColor: '#f2f5f9' },
   center: { alignItems: 'center', justifyContent: 'center' },

@@ -12,7 +12,7 @@
 import * as SQLite from "expo-sqlite";
 import * as Crypto from "expo-crypto";
 import * as Network from "expo-network";
-import { MAP_API_BASE, mapServerHeaders, usingMapTestServer } from "./mapServer";
+import { mapApiBase, mapServerHeaders, usingMapTestServer } from "./mapServer";
 
 const BATCH_SIZE = 200;
 // ~7 days of fixes at one per 30s. Beyond that the oldest are dropped
@@ -107,7 +107,7 @@ async function postBatch(crewId, headers, rows) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${MAP_API_BASE}/mobile/crews/${encodeURIComponent(crewId)}/locations`, {
+    const response = await fetch(`${mapApiBase()}/mobile/crews/${encodeURIComponent(crewId)}/locations`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify({

@@ -1,0 +1,14 @@
+# Opt-in overlay for testing the crew mobile app on a real phone.
+#
+# The base compose file binds Keycloak to 127.0.0.1 only, so a phone on the
+# same Wi-Fi can't reach the sign-in page. This re-binds it on all interfaces.
+# The backend (node, port 4000) already listens on all interfaces.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.mobile.yml up -d
+#
+# TESTING ONLY, on a trusted network: this exposes the Keycloak admin console
+# (admin/admin) to the LAN. Go back to plain `docker compose up -d` afterwards.
+services:
+  keycloak:
+    ports: !override
+      - "0.0.0.0:18080:8080"

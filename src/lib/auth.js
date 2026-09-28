@@ -4,7 +4,8 @@
 import { Platform } from "react-native";
 import * as AuthSession from "expo-auth-session";
 import * as SecureStore from "expo-secure-store";
-import { KEYCLOAK_URL, REALM, CLIENT_ID, REDIRECT_SCHEME } from "../config";
+import { REALM, CLIENT_ID, REDIRECT_SCHEME } from "../config";
+import { keycloakUrl, loadServer } from "./server";
 import { encryptString, decryptString } from "./webCrypto";
 
 // Encrypted, persistent token storage on both platforms:
@@ -55,13 +56,19 @@ const SafeStore = {
   },
 };
 
-export const discovery = {
-  authorizationEndpoint: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/auth`,
-  tokenEndpoint: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token`,
-  endSessionEndpoint: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/logout`,
-};
+// Keycloak endpoints for the currently configured server (lib/server.js).
+export function getDiscovery() {
+  const base = `${keycloakUrl()}/realms/${REALM}/protocol/openid-connect`;
+  return {
+    authorizationEndpoint: `${base}/auth`,
+    tokenEndpoint: `${base}/token`,
+    endSessionEndpoint: `${base}/logout`,
+  };
+}
 
-export const redirectUri = AuthSession.makeRedirectUri({ scheme: REDIRECT_SCHEME });
+// A path is required: Keycloak rejects "omscrew://" (empty host) as an
+// invalid redirect URI. "omscrew://auth" matches the client's omscrew://* rule.
+export const redirectUri = AuthSession.makeRedirectUri({ scheme: REDIRECT_SCHEME, path: "auth" });
 
 let accessToken = null;
 let refreshToken = null;
@@ -88,7 +95,7 @@ async function exchangeCode(code, codeVerifier) {
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
   });
-  const response = await fetch(discovery.tokenEndpoint, {
+  const response = await fetch(getDiscovery().tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -121,7 +128,7 @@ export async function refreshAccessToken() {
       client_id: CLIENT_ID,
       refresh_token: refreshToken,
     });
-    const response = await fetch(discovery.tokenEndpoint, {
+    const response = await fetch(getDiscovery().tokenEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
@@ -173,6 +180,7 @@ export async function login(promptAsync, request) {
 // (e.g. a startup spinner) can't hang waiting on this.
 export async function restoreSession() {
   try {
+    await loadServer();
     const stored = await SafeStore.getItemAsync("oms_token");
     if (!stored) return false;
     const parsed = parseJwt(stored);
@@ -203,6 +211,7 @@ export function authHeader() {
 // expired or about to be, and persists any refreshed pair back to storage.
 export async function getFreshAccessToken() {
   try {
+    await loadServer(); // may be a fresh headless JS instance
     const stored = await SafeStore.getItemAsync("oms_token");
     if (!stored) return null;
     const parsed = parseJwt(stored);
@@ -217,7 +226,7 @@ export async function getFreshAccessToken() {
       client_id: CLIENT_ID,
       refresh_token: storedRefresh,
     });
-    const response = await fetch(discovery.tokenEndpoint, {
+    const response = await fetch(getDiscovery().tokenEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
