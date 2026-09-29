@@ -11,6 +11,7 @@ import { buildCsv, buildPdf } from '../domain/reports.js';
 import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
+import { traceSection } from '../domain/sectionalize.js';
 import sharp from 'sharp';
 
 export const api = Router();
@@ -37,6 +38,11 @@ try { NETWORK = JSON.parse(readFileSync(join(_dir, '..', 'infra', 'network.json'
 catch { NETWORK = { counts: {}, substations: [], feederLines: [] }; }
 api.get('/network', (req, res) => res.json(NETWORK));
 api.get('/network/meta', (req, res) => res.json({ counts: NETWORK.counts, bounds: NETWORK.bounds, feeders: NETWORK.feeders }));
+api.get('/network/section/:cimMrid', async (req, res) => {
+  const result = await traceSection(req.params.cimMrid);
+  if (!result.found) return res.status(404).json(result);
+  res.json(result);
+});
 
 // ---------- incidents ----------
 api.get('/incidents', async (req, res) => res.json(await repo.incidents()));
