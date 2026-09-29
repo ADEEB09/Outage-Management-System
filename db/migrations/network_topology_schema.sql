@@ -137,3 +137,11 @@ CREATE INDEX IF NOT EXISTS idx_network_pa_terminal ON network.protection_assets 
 -- (DiagramObjectPoint for CIM XML, lat/lon fields for the RMU backfill)
 -- before insert, so there's one obvious place a bad coordinate would be
 -- caught, rather than a trigger silently accepting whatever raw_attrs holds.
+
+-- Added with the map work: full line geometry. conducting_equipment.geog is a
+-- single representative point (fine for markers and distance queries);
+-- path_geog holds the ordered path for line equipment (ACLineSegment) so it
+-- can be drawn on the Network Map. Additive and idempotent -- safe to re-run
+-- on a database that already has the earlier version of this schema.
+ALTER TABLE network.conducting_equipment ADD COLUMN IF NOT EXISTS path_geog geography(LineString, 4326);
+CREATE INDEX IF NOT EXISTS idx_network_ce_path ON network.conducting_equipment USING GIST (path_geog);

@@ -16,17 +16,23 @@
 // against the same or an updated file is always safe.
 //
 // HONEST FINDING FROM TESTING: this source file's single Diagram element
-// declares EPSG:4326 (WGS84) for every DiagramObject, but that is not
-// actually true for every point -- some DiagramObjectPoints are UTM
-// easting/northing in metres (large 6-7 digit values), not lon/lat degrees.
-// PostGIS's geography cast does not reject an out-of-range value; it
-// silently normalizes it into something that still looks like a valid
-// coordinate but is geographic nonsense. Every point is therefore validated
-// against the WGS84 range (|lon|<=180, |lat|<=90) BEFORE it is ever used to
-// build a geography value; anything failing that check is dropped, and the
-// affected equipment is left with geog = NULL rather than a wrong location.
-// Counted and reported in the import stats every run (pointsSkippedOutOfRange,
-// equipmentWithNoGeog), not hidden.
+// declares EPSG:4326 (WGS84) for every DiagramObject, but that is not true
+// for every point -- all ACLineSegment geometry is UTM easting/northing in
+// metres, not lon/lat degrees. PostGIS's geography cast does not reject an
+// out-of-range value; it silently normalizes it into a coordinate that looks
+// valid but is geographic nonsense (one line landed mid-Pacific), so every
+// point is classified on its RAW parsed value before it reaches PostGIS.
+//
+// Recovery, and why it is safe: metre-valued points are converted from UTM
+// only when the zone can be PROVEN from the file itself -- the candidate zone
+// (derived from the file's own lon/lat points) must place >=99% of them inside
+// the area those points cover. For the Dehradun file that is zone 44N: all 232
+// line endpoints land within 30 m of a pole (median 4.1 m), while zone 43N puts
+// them ~570 km away. If no single zone can be proven, nothing is converted;
+// the points are dropped and counted, never guessed.
+//
+// Reported every run: pointsConvertedFromUtm, utmZoneUsed,
+// pointsSkippedOutOfRange, equipmentWithNoGeog.
 //
 // Run: node src/infra/importCimNetwork.js <path-to-cim.xml>
 import 'dotenv/config';
@@ -34,6 +40,7 @@ import { readFileSync } from 'node:fs';
 import { XMLParser } from 'fast-xml-parser';
 import { db, migrate } from './db.js';
 import { pathToFileURL } from 'node:url';
+import { utmToLonLat, zoneOfLon } from './utm.js';
 
 
 const RDF_ID = '@_rdf:ID';
@@ -106,45 +113,103 @@ async function importCim(path) {
     const ref = dObj.attrs['cim:DiagramObject.IdentifiedObject'];
     if (ref?.resource) diagramObjToAsset.set(dObj.id, ref.resource);
   }
-  const pointsByDiagramObj = new Map(); // DiagramObject id -> [{seq,x,y}]
-  let skippedOutOfRange = 0;
+  // Collect EVERY raw point first (no filtering yet) -- whether a point is
+  // lon/lat degrees or UTM metres can only be judged against the rest of the
+  // file, so classification happens in a second pass below.
+  const rawPoints = []; // { diagObj, seq, x, y }
   for (const pt of byTag(elements, 'cim:DiagramObjectPoint')) {
     const ref = pt.attrs['cim:DiagramObjectPoint.DiagramObject'];
     if (!ref?.resource) continue;
     const seq = Number(pt.attrs['cim:DiagramObjectPoint.sequenceNumber'] ?? 0);
-    const x = Number(pt.attrs['cim:DiagramObjectPoint.xPosition']); // longitude, IF this point is really WGS84
-    const y = Number(pt.attrs['cim:DiagramObjectPoint.yPosition']); // latitude, IF this point is really WGS84
+    const x = Number(pt.attrs['cim:DiagramObjectPoint.xPosition']);
+    const y = Number(pt.attrs['cim:DiagramObjectPoint.yPosition']);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    // The file's own single Diagram element declares EPSG:4326 (WGS84) for
-    // every DiagramObject -- but real data shows this is FALSE for a subset:
-    // some points are UTM easting/northing in metres (e.g. x=218768.11,
-    // y=3356263.45 for ACLineSegment 1380139840), not lon/lat in degrees.
-    // Found by testing: PostGIS's geography cast does NOT reject an
-    // out-of-range value, it silently wraps/normalizes it into something
-    // that LOOKS like a valid coordinate but is geographic nonsense (that
-    // specific point stored as lat=-16.55, lon=-111.89 -- mid-Pacific,
-    // nowhere near this substation). So this check MUST run on the raw
-    // parsed value, before any point ever reaches ST_MakePoint -- a check
-    // against the already-stored geography would find nothing wrong.
-    if (Math.abs(x) > 180 || Math.abs(y) > 90) {
-      skippedOutOfRange++;
-      continue;
-    }
-    const list = pointsByDiagramObj.get(ref.resource) || [];
-    list.push({ seq, x, y });
-    pointsByDiagramObj.set(ref.resource, list);
+    rawPoints.push({ diagObj: ref.resource, seq, x, y });
   }
-  const assetPoint = new Map(); // asset mRID -> {lat, lon} (lowest-sequence point; good enough for a map marker, not a full path)
+
+  // FINDINGS FROM TESTING (see header): the file declares EPSG:4326 for every
+  // DiagramObject, but line geometry is really UTM easting/northing in metres.
+  // Classification:
+  //   * |x|<=180 and |y|<=90  -> lon/lat degrees, used as-is ("valid")
+  //   * anything else          -> projected metres; converted from UTM ONLY if
+  //     a zone can be proven from the file itself (below), else dropped.
+  const isDegrees = (p) => Math.abs(p.x) <= 180 && Math.abs(p.y) <= 90;
+  const valid = rawPoints.filter(isDegrees);
+  const projected = rawPoints.filter((p) => !isDegrees(p));
+
+  let utmZone = null;
+  let utmNorth = true;
+  let pointsConvertedFromUtm = 0;
+  let skippedOutOfRange = 0;
+  if (projected.length) {
+    // The zone is NOT assumed. It is derived from where the file's own valid
+    // lon/lat points are, then PROVEN: a candidate zone is accepted only if
+    // (nearly) every projected point, once converted, lands inside the area
+    // covered by the valid points (plus a ~10 km margin). Zones 43 vs 44 are
+    // 570 km apart for this file, so a wrong zone cannot pass this test.
+    // If the file has no valid points to compare against, or zero or more
+    // than one zone passes, NOTHING is converted -- points are dropped and
+    // reported, exactly as before, rather than guessed.
+    if (valid.length) {
+      const lons = valid.map((p) => p.x).sort((a, b) => a - b);
+      const lats = valid.map((p) => p.y).sort((a, b) => a - b);
+      const MARGIN = 0.1; // degrees, ~10 km
+      const box = { w: lons[0] - MARGIN, e: lons[lons.length - 1] + MARGIN, s: lats[0] - MARGIN, n: lats[lats.length - 1] + MARGIN };
+      const medianLat = lats[Math.floor(lats.length / 2)];
+      const north = medianLat >= 0;
+      utmNorth = north;
+      const z0 = zoneOfLon(lons[Math.floor(lons.length / 2)]);
+      const passing = [];
+      for (const z of [z0 - 1, z0, z0 + 1].filter((z) => z >= 1 && z <= 60)) {
+        const inside = projected.filter((p) => {
+          const [lo, la] = utmToLonLat(p.x, p.y, z, north);
+          return lo >= box.w && lo <= box.e && la >= box.s && la <= box.n;
+        }).length;
+        if (inside / projected.length >= 0.99) passing.push(z);
+      }
+      if (passing.length === 1) utmZone = passing[0];
+      else console.warn(`WARNING: could not prove a single UTM zone for ${projected.length} projected points (candidates passing: ${JSON.stringify(passing)}) -- they will be skipped, not guessed.`);
+    } else {
+      console.warn(`WARNING: ${projected.length} projected points but no lon/lat points to verify a UTM zone against -- skipped, not guessed.`);
+    }
+  }
+
+  const pointsByDiagramObj = new Map(); // DiagramObject id -> [{seq, lon, lat}]
+  const addPoint = (diagObj, seq, lon, lat) => {
+    const list = pointsByDiagramObj.get(diagObj) || [];
+    list.push({ seq, lon, lat });
+    pointsByDiagramObj.set(diagObj, list);
+  };
+  for (const p of valid) addPoint(p.diagObj, p.seq, p.x, p.y);
+  for (const p of projected) {
+    if (utmZone == null) { skippedOutOfRange++; continue; }
+    const [lon, lat] = utmToLonLat(p.x, p.y, utmZone, utmNorth);
+    addPoint(p.diagObj, p.seq, lon, lat);
+    pointsConvertedFromUtm++;
+  }
+
+  // Per asset: a representative point (lowest sequence) for the marker /
+  // distance queries, and -- when the asset has 2+ points -- the full ordered
+  // path so line equipment can actually be DRAWN on the map.
+  const assetPoint = new Map(); // asset mRID -> {lat, lon}
+  const assetPath = new Map();  // asset mRID -> [[lon, lat], ...]
   for (const [diagObjId, assetId] of diagramObjToAsset) {
     const pts = (pointsByDiagramObj.get(diagObjId) || []).sort((a, b) => a.seq - b.seq);
-    if (pts.length) assetPoint.set(assetId, { lat: pts[0].y, lon: pts[0].x });
+    if (!pts.length) continue;
+    assetPoint.set(assetId, { lat: pts[0].lat, lon: pts[0].lon });
+    if (pts.length >= 2) assetPath.set(assetId, pts.map((q) => [q.lon, q.lat]));
   }
   const geogSql = (mrid) => {
     const p = assetPoint.get(mrid);
     return p ? { rawtext: `ST_SetSRID(ST_MakePoint(${p.lon},${p.lat}),4326)::geography` } : null;
   };
+  const pathSql = (mrid) => {
+    const path = assetPath.get(mrid);
+    if (!path) return null;
+    return { rawtext: `ST_GeogFromText('SRID=4326;LINESTRING(${path.map(([lo, la]) => `${lo} ${la}`).join(',')})')` };
+  };
 
-  const stats = { substations: 0, feeders: 0, equipment: 0, terminals: 0, connectivityNodes: 0, protectionAssets: 0, pointsSkippedOutOfRange: skippedOutOfRange };
+  const stats = { substations: 0, feeders: 0, equipment: 0, terminals: 0, connectivityNodes: 0, protectionAssets: 0, pointsConvertedFromUtm, utmZoneUsed: utmZone, pointsSkippedOutOfRange: skippedOutOfRange };
 
   // ---- Substations ----
   const substations = byTag(elements, 'cim:Substation');
@@ -202,13 +267,17 @@ async function importCim(path) {
   for (const eq of equipmentElements) {
     const feederRef = eq.attrs['cim:Equipment.Feeder'];
     const geog = geogSql(eq.id);
+    const pathG = pathSql(eq.id);
     await db.none(
-      `INSERT INTO network.conducting_equipment (cim_mrid, cim_class, name, feeder_id, geog, raw_attrs)
+      `INSERT INTO network.conducting_equipment (cim_mrid, cim_class, name, feeder_id, geog, path_geog, raw_attrs)
        VALUES ($/mrid/, $/cls/, $/name/,
          (SELECT id FROM network.feeders WHERE cim_mrid=$/feederMrid/),
-         ${geog ? geog.rawtext : 'NULL'}, $/attrs/)
+         ${geog ? geog.rawtext : 'NULL'}, ${pathG ? pathG.rawtext : 'NULL'}, $/attrs/)
        ON CONFLICT (cim_mrid) DO UPDATE SET cim_class=EXCLUDED.cim_class, name=EXCLUDED.name,
-         feeder_id=EXCLUDED.feeder_id, geog=COALESCE(EXCLUDED.geog, network.conducting_equipment.geog),
+         feeder_id=EXCLUDED.feeder_id,
+         -- the latest file is the truth: a re-import must be able to CLEAR a stale or
+         -- wrong coordinate (an earlier COALESCE here preserved bad values through re-imports)
+         geog=EXCLUDED.geog, path_geog=EXCLUDED.path_geog,
          raw_attrs=EXCLUDED.raw_attrs`,
       {
         mrid: eq.id,
