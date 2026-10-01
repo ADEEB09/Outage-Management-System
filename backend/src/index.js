@@ -103,6 +103,14 @@ http.listen(PORT, () => {
   console.log(`  REST   → http://localhost:${PORT}/api`);
   console.log(`  WS     → ws://localhost:${PORT}`);
   console.log(`  Health → http://localhost:${PORT}/api/health\n`);
-  startSimulator();
+  // The simulator fakes crew GPS drift, SCADA alarms and trouble calls so a
+  // dev stack looks live. It must be off wherever real crews or a real SCADA
+  // feed are connected, or it mixes fake data into theirs.
+  if (/^(off|false|0|no)$/i.test(process.env.SIMULATOR || '')) {
+    console.log('  [simulator] disabled (SIMULATOR=off) - no fake crew GPS, alarms or calls');
+  } else {
+    console.log('  [simulator] running - fake crew GPS, alarms and calls (set SIMULATOR=off to disable)');
+    startSimulator();
+  }
   startNotifier();
 });

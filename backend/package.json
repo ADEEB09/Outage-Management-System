@@ -12,7 +12,8 @@
     "tiles:fetch": "node scripts/fetch-tiles.mjs",
     "map:test-server": "node map-test-server/server.mjs",
     "keycloak:mobile": "node scripts/setup-mobile-keycloak.mjs",
-    "roads:build": "node scripts/build-road-graph.mjs"
+    "roads:build": "node scripts/build-road-graph.mjs",
+    "photos:export": "node scripts/export-photos.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

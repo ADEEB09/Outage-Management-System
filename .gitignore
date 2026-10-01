@@ -32,3 +32,6 @@ backend/map-test-server/*.apk
 # silently dropping icon/permission changes and the cleartext-only-in-test rule.
 /android
 /ios
+
+# Crew photos exported from the DB (npm run photos:export)
+photo-export/

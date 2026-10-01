@@ -23,6 +23,7 @@ export const TOPICS = {
   INDICES_UPDATED: 'oms.indices.updated',
   MESSAGE_POSTED: 'oms.message.posted',
     ERT_CHANGED: 'oms.incident.ert_changed',
+  CREW_TRACKING_CHANGED: 'crew.tracking.changed',
 };
 const ALL_TOPICS = Object.values(TOPICS);
 
