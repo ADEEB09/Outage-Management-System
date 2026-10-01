@@ -38,12 +38,28 @@ import { fileURLToPath } from 'node:url';
 // [west, south, east, north]. City regions get street-level detail; the
 // corridor covers the highways between the cities (to zoom 15, enough to
 // read junctions and village roads on the way to a site).
-export const REGIONS = [
+const SERVICE_REGIONS = [
   { id: 'dehradun', name: 'Dehradun', bbox: [77.92, 30.22, 78.13, 30.42], minZoom: 10, maxZoom: 16 },
   { id: 'rishikesh', name: 'Rishikesh', bbox: [78.22, 30.03, 78.36, 30.16], minZoom: 10, maxZoom: 16 },
   { id: 'haridwar', name: 'Haridwar', bbox: [78.0, 29.86, 78.22, 30.0], minZoom: 10, maxZoom: 16 },
   { id: 'corridor', name: 'Dehradun–Rishikesh–Haridwar corridor', bbox: [77.85, 29.8, 78.45, 30.5], minZoom: 8, maxZoom: 15 },
 ];
+
+// Extra areas for testing the app away from the service area, opt-in with
+// PACK_TEST_REGIONS=delhi-ncr (set it for tiles:fetch AND roads:build). Each
+// names the OSM extract in tile-server/ its roads come from; its tiles need a
+// renderer loaded with that extract (see tile-server/docker-compose.yml).
+const TEST_REGIONS = [
+  // BBBike "NewDelhi" extract: Delhi, Noida, most of Gurgaon.
+  //   curl -L -o tile-server/ncr.osm.pbf https://download.bbbike.org/osm/bbbike/NewDelhi/NewDelhi.osm.pbf
+  { id: 'delhi-ncr', name: 'Delhi NCR (test)', bbox: [76.98, 28.44, 77.49, 28.73], minZoom: 8, maxZoom: 16, pbf: 'ncr.osm.pbf' },
+];
+
+const testIds = (process.env.PACK_TEST_REGIONS || '').split(',').map((s) => s.trim()).filter(Boolean);
+for (const id of testIds) {
+  if (!TEST_REGIONS.some((r) => r.id === id)) throw new Error(`Unknown PACK_TEST_REGIONS entry "${id}"`);
+}
+export const REGIONS = [...SERVICE_REGIONS, ...TEST_REGIONS.filter((r) => testIds.includes(r.id))];
 
 const SOURCE = process.env.TILE_SOURCE_URL || '';
 const ATTRIBUTION = process.env.TILE_ATTRIBUTION || '© OpenStreetMap contributors';
@@ -216,7 +232,7 @@ async function main() {
       Math.max(...all.map((b) => b[2])),
       Math.max(...all.map((b) => b[3])),
     ],
-    regions,
+    regions: regions.map(({ pbf, ...region }) => region),
     tileCount: count,
     totalBytes: bytes,
   };

@@ -27,7 +27,11 @@ const require = createRequire(import.meta.url);
 const parseOsm = require('osm-pbf-parser');
 
 const here = dirname(fileURLToPath(import.meta.url));
-const PBF = process.env.OSM_PBF || join(here, '..', 'tile-server', 'uttarakhand.osm.pbf');
+// Comma-separated list. By default the Uttarakhand extract plus the extract
+// of each enabled test region (PACK_TEST_REGIONS, see fetch-tiles.mjs).
+const PBFS = process.env.OSM_PBF
+  ? process.env.OSM_PBF.split(',').map((p) => p.trim()).filter(Boolean)
+  : [...new Set(['uttarakhand.osm.pbf', ...REGIONS.filter((r) => r.pbf).map((r) => r.pbf)])].map((f) => join(here, '..', 'tile-server', f));
 const OUT = process.env.TILES_DIR || join(here, '..', 'tiles');
 const E = 1e5;
 
@@ -44,16 +48,19 @@ const SPEEDS = {
   service: 15, track: 12,
 };
 
-// Everything the pack covers, plus a margin so routes can leave and
-// re-enter the area without being cut off at the edge.
+// Each region the pack covers, plus a margin so routes can leave and
+// re-enter it without being cut off at the edge. Regions are kept separate,
+// so a far-away test region doesn't pull in every road in between.
 const MARGIN = 0.05;
+const AREAS = REGIONS.map((r) => [r.bbox[0] - MARGIN, r.bbox[1] - MARGIN, r.bbox[2] + MARGIN, r.bbox[3] + MARGIN]);
 const BBOX = [
-  Math.min(...REGIONS.map((r) => r.bbox[0])) - MARGIN,
-  Math.min(...REGIONS.map((r) => r.bbox[1])) - MARGIN,
-  Math.max(...REGIONS.map((r) => r.bbox[2])) + MARGIN,
-  Math.max(...REGIONS.map((r) => r.bbox[3])) + MARGIN,
+  Math.min(...AREAS.map((b) => b[0])),
+  Math.min(...AREAS.map((b) => b[1])),
+  Math.max(...AREAS.map((b) => b[2])),
+  Math.max(...AREAS.map((b) => b[3])),
 ];
-const inBbox = (lat, lon) => lon >= BBOX[0] && lat >= BBOX[1] && lon <= BBOX[2] && lat <= BBOX[3];
+const inArea = (b, lat, lon) => lon >= b[0] && lat >= b[1] && lon <= b[2] && lat <= b[3];
+const inBbox = (lat, lon) => AREAS.some((b) => inArea(b, lat, lon));
 
 function drivable(tags) {
   const speed = SPEEDS[tags.highway];
@@ -74,10 +81,10 @@ function onewayOf(tags) {
   return tags.junction === 'roundabout' || tags.junction === 'circular' || tags.highway === 'motorway' ? 1 : 0;
 }
 
-function readPbf(onItem) {
+function readOnePbf(path, onItem) {
   return new Promise((resolve, reject) => {
     const parser = parseOsm();
-    createReadStream(PBF).on('error', reject).pipe(parser);
+    createReadStream(path).on('error', reject).pipe(parser);
     parser.on('data', (items) => {
       for (const item of items) onItem(item);
     });
@@ -86,17 +93,25 @@ function readPbf(onItem) {
   });
 }
 
+// Extracts may overlap at their edges; a way seen twice is kept once.
+async function readPbf(onItem) {
+  for (const path of PBFS) await readOnePbf(path, onItem);
+}
+
 async function main() {
-  if (!existsSync(PBF)) {
-    throw new Error(`OSM extract not found at ${PBF}. Download it first:\n  curl -L -o tile-server/uttarakhand.osm.pbf https://download.openstreetmap.fr/extracts/asia/india/uttarakhand-latest.osm.pbf`);
+  const absent = PBFS.filter((p) => !existsSync(p));
+  if (absent.length) {
+    throw new Error(`OSM extract not found at ${absent.join(', ')}. Download it first, e.g.:\n  curl -L -o tile-server/uttarakhand.osm.pbf https://download.openstreetmap.fr/extracts/asia/india/uttarakhand-latest.osm.pbf`);
   }
-  console.log(`Reading roads from ${PBF}`);
+  console.log(`Reading roads from ${PBFS.join(', ')}`);
 
   // Pass 1: drivable ways and the nodes they use.
   const ways = [];
   const needed = new Set();
+  const seenWays = new Set();
   await readPbf((item) => {
-    if (item.type !== 'way' || !item.tags?.highway) return;
+    if (item.type !== 'way' || !item.tags?.highway || seenWays.has(item.id)) return;
+    seenWays.add(item.id);
     const kmh = drivable(item.tags);
     if (!kmh || item.refs.length < 2) return;
     const oneway = onewayOf(item.tags);
@@ -133,9 +148,10 @@ async function main() {
     }
   }
 
-  // Largest connected component only: an isolated fragment (a gated campus,
-  // a road cut off by the extract) would otherwise catch GPS snaps and
-  // produce "no route".
+  // Largest connected component of each region only: an isolated fragment
+  // (a gated campus, a road cut off by the extract) would otherwise catch
+  // GPS snaps and produce "no route". Per region, because a test region far
+  // from the service area is a separate network of its own.
   const parent = new Map();
   const find = (x) => {
     while (parent.get(x) !== x) {
@@ -149,10 +165,16 @@ async function main() {
     const a = find(e.refs[0]), b = find(e.refs[e.refs.length - 1]);
     if (a !== b) parent.set(a, b);
   }
-  const size = new Map();
-  for (const n of parent.keys()) size.set(find(n), (size.get(find(n)) || 0) + 1);
-  const main = [...size.entries()].sort((x, y) => y[1] - x[1])[0][0];
-  const kept = rawEdges.filter((e) => find(e.refs[0]) === main);
+  const keep = new Set();
+  for (const area of AREAS) {
+    const size = new Map();
+    for (const n of parent.keys()) {
+      if (inArea(area, ...coord.get(n))) size.set(find(n), (size.get(find(n)) || 0) + 1);
+    }
+    const largest = [...size.entries()].sort((x, y) => y[1] - x[1])[0];
+    if (largest) keep.add(largest[0]);
+  }
+  const kept = rawEdges.filter((e) => keep.has(find(e.refs[0])));
   console.log(`  ${kept.length} road segments in the connected network (${rawEdges.length - kept.length} isolated dropped)`);
 
   // Number junctions in a spatial order so the delta encoding stays small.
