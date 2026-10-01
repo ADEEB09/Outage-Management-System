@@ -23,13 +23,14 @@ import {
   restoreSession,
   logout as authLogout,
   isAuthenticated,
+  myCrewId,
   isBiometricEnabled,
   setBiometricEnabled,
 } from './lib/auth';
 import { biometricUnlock } from './lib/biometric';
 import { getLockoutStatus, recordFailedAttempt, resetAttempts as resetLoginAttempts, MAX_ATTEMPTS, LOCKOUT_MS } from './lib/lockout';
 import { API_PORT, CLIENT_ID, KEYCLOAK_PORT } from './config';
-import { getCurrentCrew, getMyJobs, updateJobStatus, getJobsLastSyncedAt, getJobMessages, getJobPhotos, getCrewMessages, saveAssetScan, getAssetScans } from './lib/api.js';
+import { reportTrackingState, getCurrentCrew, getMyJobs, updateJobStatus, getJobsLastSyncedAt, getJobMessages, getJobPhotos, getCrewMessages, saveAssetScan, getAssetScans } from './lib/api.js';
 import { getLocation, getLastKnownLocation } from './lib/location';
 import { uploadCapturedPhoto } from './lib/photos';
 import { navigateTo } from './lib/navigate';
@@ -37,7 +38,7 @@ import { isOnlineState, distanceAndDirection } from './lib/offlineNavigation';
 import { getRoadRoute, preloadRoadGraph, formatDistance, formatDuration } from './lib/roadRouting';
 import { openMultiJobRoute } from './lib/routing';
 import { queueUpdate, flushQueue, getQueueLength, getQueueItems } from './lib/offlineQueue';
-import { startCrewTracking, stopCrewTracking, isCrewTrackingActive } from './lib/backgroundLocation';
+import { startCrewTracking, stopCrewTracking, autoStartCrewTracking, setTrackingPausedByCrew } from './lib/backgroundLocation';
 import { flushLocations, getPendingLocationCount } from './lib/locationQueue';
 import { downloadPack, cancelPackDownload, getInstalledPack, getPackStatus, subscribePackStatus } from './lib/offlineMap/tileStore';
 import OfflineMap from './components/OfflineMap';
@@ -218,10 +219,26 @@ function NativeAppScreen() {
     if (authenticated) isBiometricEnabled().then(setBiometricOn).catch(() => {});
   }, [authenticated]);
 
+  // Tracking starts by itself once a crew is signed in (asking for location
+  // permission the first time), so dispatch sees every crew on duty without
+  // anyone having to remember the Tracking button. The crew can still switch
+  // it off; that holds until they sign in again. Demo mode never tracks.
   useEffect(() => {
-    if (authenticated && isAuthenticated()) {
-      isCrewTrackingActive().then(setTrackingOn).catch(() => {});
-    }
+    if (!authenticated || !isAuthenticated()) return undefined;
+    let cancelled = false;
+    setTrackingBusy(true);
+    const crewId = myCrewId();
+    autoStartCrewTracking(crewId)
+      .catch(() => ({ on: false, reason: 'permission_denied' }))
+      .then(({ on, reason }) => {
+        // Re-reported on every start so dispatch's view heals after an
+        // offline report was lost; the backend only alerts on a change.
+        reportTrackingState(crewId, on ? 'on' : 'off', reason).catch(() => {});
+        if (cancelled) return;
+        setTrackingOn(on);
+        setTrackingBusy(false);
+      });
+    return () => { cancelled = true; };
   }, [authenticated]);
 
   const handleBiometricUnlock = useCallback(async () => {
@@ -269,14 +286,18 @@ function NativeAppScreen() {
       if (trackingOn) {
         console.log('[toggleTracking] stopping...');
         await stopCrewTracking();
+        await setTrackingPausedByCrew(true);
         console.log('[toggleTracking] stopped.');
         setTrackingOn(false);
+        reportTrackingState(crew.id, 'off', 'turned_off').catch(() => {});
         return;
       }
       console.log('[toggleTracking] starting, crew.id =', crew.id);
-      const started = await startCrewTracking(crew.id);
-      console.log('[toggleTracking] startCrewTracking returned:', started);
-      setTrackingOn(started);
+      await setTrackingPausedByCrew(false);
+      const { on, reason } = await startCrewTracking(crew.id);
+      console.log('[toggleTracking] startCrewTracking returned:', on, reason);
+      setTrackingOn(on);
+      reportTrackingState(crew.id, on ? 'on' : 'off', reason).catch(() => {});
     } catch (err) {
       console.log('[toggleTracking] ERROR:', err?.message || err);
       setTrackingOn(false);
@@ -284,6 +305,22 @@ function NativeAppScreen() {
       setTrackingBusy(false);
     }
   }, [trackingOn, trackingBusy, crew.id]);
+
+  // Off duty = not tracked: signing out stops tracking (points already
+  // recorded still upload) and the next sign-in starts it again.
+  const signOut = useCallback(async () => {
+    // Report before the token is cleared, but never let a dead network hold
+    // up signing out.
+    await Promise.race([
+      reportTrackingState(myCrewId(), 'off', 'signed_out').catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    await stopCrewTracking().catch(() => {});
+    await setTrackingPausedByCrew(false);
+    setTrackingOn(false);
+    await authLogout();
+    setAuthenticated(false);
+  }, []);
 
   const refresh = useCallback(() => {
     if (!authenticated) return;
@@ -430,9 +467,8 @@ function NativeAppScreen() {
         <Pressable
           style={styles.demoBtn}
           onPress={async () => {
-            await authLogout();
+            await signOut();
             setNeedsBiometric(false);
-            setAuthenticated(false);
           }}
         >
           <Text style={styles.demoBtnText}>Sign out instead</Text>
@@ -449,56 +485,67 @@ function NativeAppScreen() {
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#173355" />
       <View style={styles.header}>
-        <View>
-          <Text style={styles.kicker}>OMS CREW</Text>
-          <Text style={styles.crewName}>{crew.name}</Text>
-          <Text style={styles.role}>{crew.role} · {crew.id}</Text>
-        </View>
-        <View style={styles.historyControls}>
-          <Pressable style={[styles.historyButton, !backStack.length && styles.historyButtonOff]} disabled={!backStack.length} onPress={goBack} accessibilityLabel="Go back">
-            <Text style={styles.historyButtonText}>‹</Text>
-          </Pressable>
-          <Pressable style={[styles.historyButton, !forwardStack.length && styles.historyButtonOff]} disabled={!forwardStack.length} onPress={goForward} accessibilityLabel="Go forward">
-            <Text style={styles.historyButtonText}>›</Text>
-          </Pressable>
-        </View>
-        <View style={styles.headerRight}>
-          {!isAuthenticated() && (
-            <View style={styles.demoBadge}>
-              <Text style={styles.demoBadgeText}>DEMO MODE</Text>
+        <View style={styles.headerTop}>
+          <View style={styles.headerIdentity}>
+            <Text style={styles.kicker}>OMS CREW</Text>
+            <Text style={styles.crewName} numberOfLines={1}>{crew.name}</Text>
+            <Text style={styles.role} numberOfLines={1}>{crew.role} · {crew.id}</Text>
+          </View>
+          <View style={styles.headerRight}>
+            <View style={styles.historyControls}>
+              <Pressable style={[styles.historyButton, !backStack.length && styles.historyButtonOff]} disabled={!backStack.length} onPress={goBack} accessibilityLabel="Go back">
+                <Text style={styles.historyButtonText}>‹</Text>
+              </Pressable>
+              <Pressable style={[styles.historyButton, !forwardStack.length && styles.historyButtonOff]} disabled={!forwardStack.length} onPress={goForward} accessibilityLabel="Go forward">
+                <Text style={styles.historyButtonText}>›</Text>
+              </Pressable>
             </View>
-          )}
-          {pendingCount > 0 && (
-            <View style={styles.pendingBadge}>
-              <Text style={styles.pendingText}>{pendingCount} queued</Text>
-            </View>
+            {!isAuthenticated() && (
+              <View style={styles.demoBadge}>
+                <Text style={styles.demoBadgeText}>DEMO MODE</Text>
+              </View>
+            )}
+            {pendingCount > 0 && (
+              <View style={styles.pendingBadge}>
+                <Text style={styles.pendingText}>{pendingCount} queued</Text>
+              </View>
+            )}
+          </View>
+        </View>
+        <View style={styles.actionBar}>
+          {isAuthenticated() && (
+            <HeaderAction
+              label="Messages"
+              count={crewMessages.length}
+              onPress={() => setMessagesVisible(true)}
+              accessibilityLabel="Open OMS messages"
+            />
           )}
           {isAuthenticated() && (
-            <Pressable style={styles.online} onPress={() => setMessagesVisible(true)} accessibilityLabel="Open OMS messages">
-              <Text style={styles.onlineText}>OMS messages{crewMessages.length ? ` (${crewMessages.length})` : ''}</Text>
-            </Pressable>
+            <HeaderAction
+              label="Biometric"
+              on={biometricOn}
+              onPress={toggleBiometric}
+              accessibilityLabel={biometricOn ? 'Biometric unlock is on, tap to turn off' : 'Turn on biometric unlock'}
+            />
           )}
-          {isAuthenticated() && (
-            <Pressable style={styles.online} onPress={toggleBiometric}>
-              <Text style={styles.onlineText}>{biometricOn ? 'Biometric: On' : 'Enable biometric'}</Text>
-            </Pressable>
-          )}
-          <Pressable style={styles.online} onPress={toggleTracking} disabled={trackingBusy}>
-            <Text style={styles.onlineText}>
-              {trackingBusy ? 'Updating…' : trackingOn ? 'Tracking: On' : 'Enable tracking'}
-              {pendingLocations > 0 ? ` · ${pendingLocations} saved offline` : ''}
-            </Text>
-          </Pressable>
-          <Pressable
-            style={styles.online}
-            onPress={async () => {
-              await authLogout();
-              setAuthenticated(false);
-            }}
-          >
-            <View style={styles.dot} />
-            <Text style={styles.onlineText}>Sign out</Text>
-          </Pressable>
+          <HeaderAction
+            label={trackingBusy ? 'Updating…' : 'Tracking'}
+            on={trackingOn}
+            count={pendingLocations}
+            onPress={toggleTracking}
+            disabled={trackingBusy}
+            accessibilityLabel={
+              (trackingOn ? 'Location tracking is on, tap to turn off' : 'Turn on location tracking') +
+              (pendingLocations > 0 ? `, ${pendingLocations} locations saved offline` : '')
+            }
+          />
+          <HeaderAction
+            label="Sign out"
+            danger
+            onPress={signOut}
+            accessibilityLabel="Sign out"
+          />
         </View>
       </View>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 100 + insets.bottom }]}>
@@ -562,10 +609,7 @@ function NativeAppScreen() {
             onExitNav={() => setNavJobId(null)}
           />
         ) : tab === 'Profile' ? (
-          <ProfileScreen crew={crew} jobs={jobs} onLogout={async () => {
-            await authLogout();
-            setAuthenticated(false);
-          }} />
+          <ProfileScreen crew={crew} jobs={jobs} onLogout={signOut} />
         ) : (
           <View style={styles.empty}>
             <Text style={styles.title}>{tab}</Text>
@@ -821,6 +865,36 @@ function CrewLogin({ onSuccess }) {
         <Text style={styles.loginFooter}>Crew access only · Offline capable</Text>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// One chip in the header's action bar. `on` shows a status dot (green = on),
+// `count` a small bubble, `danger` the red sign-out style.
+function HeaderAction({ label, on, count, danger, onPress, disabled, accessibilityLabel }) {
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.action,
+        on && styles.actionOn,
+        danger && styles.actionDanger,
+        pressed && styles.actionPressed,
+        disabled && styles.actionDisabled,
+      ]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+    >
+      {on !== undefined && <View style={[styles.actionDot, on && styles.actionDotOn]} />}
+      <Text style={[styles.actionText, danger && styles.actionTextDanger]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+        {label}
+      </Text>
+      {count > 0 && (
+        <View style={styles.actionCount}>
+          <Text style={styles.actionCountText}>{count > 99 ? '99+' : count}</Text>
+        </View>
+      )}
+    </Pressable>
   );
 }
 
@@ -1264,7 +1338,14 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
         if (cancelled || status !== 'granted') return null;
         return Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 10 },
-          (pos) => setMapLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy })
+          (pos) => setMapLocation({
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            // lets the map point the crew arrow the way they are driving
+            heading: pos.coords.heading,
+            speed: pos.coords.speed,
+          })
         );
       })
       .then((subscription) => {
@@ -1327,6 +1408,9 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
   // the road graph on the phone. Recomputed when the crew has moved ~75 m,
   // the job changes, or connectivity changes.
   const [route, setRoute] = useState(null);
+  // Metres left along the road from where the map draws the crew arrow, so the
+  // readout counts down while driving (null when off the route or none yet).
+  const [routeLeft, setRouteLeft] = useState(null);
   const routeRequest = useRef({ seq: 0, key: null, from: null });
   useEffect(() => {
     preloadRoadGraph(pack?.roadsUri);
@@ -1353,6 +1437,11 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, target?.lat, target?.lon, mapLocation, online, pack?.roadsUri]);
+
+  // Live "x km to go": the map's figure while the crew is on the route, else
+  // the length of the whole route as last computed.
+  const roadLeft = route ? (Number.isFinite(routeLeft) ? routeLeft : route.meters) : null;
+  const arrived = Boolean(selectedJob) && ((route && Number.isFinite(routeLeft) && routeLeft < 30) || (guide && guide.meters < 40));
 
   // Frame the route the first time it arrives for a job.
   const framedRouteFor = useRef(null);
@@ -1449,6 +1538,7 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
           route={route}
           onSelectJob={onSelect}
           onUserGesture={() => setFollowing(false)}
+          onRouteProgress={setRouteLeft}
         />
         <Text style={styles.mapLegend}>
           ● You  ● {navJob ? (route ? 'Site  ━ Road route' : 'Site  - - Straight line to site') : 'Incidents (by severity)'}{pack?.complete && pack.totalBytes ? ` · ${formatMb(pack.totalBytes)} on device` : ''}
@@ -1479,9 +1569,11 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
         <View style={styles.mapSelectedCard}>
           <Text style={styles.mapSelectedTitle}>{selectedJob.title}</Text>
           <Text style={styles.mapSelectedMeta}>{selectedJob.id} · {selectedJob.address}</Text>
-          {route ? (
+          {arrived ? (
+            <Text style={[styles.mapGuideText, styles.mapArrivedText]}>You have reached the site</Text>
+          ) : route ? (
             <Text style={styles.mapGuideText}>
-              {formatDistance(route.meters)} by road · about {formatDuration(route.seconds)}
+              {formatDistance(roadLeft)} to go · about {formatDuration(route.meters > 0 ? (route.seconds * roadLeft) / route.meters : route.seconds)}
               {route.source === 'device' ? ' · offline directions' : ''}
             </Text>
           ) : guide ? (
@@ -1596,22 +1688,33 @@ const styles = StyleSheet.create({
   loginFooter: { color: '#77938c', fontSize: 11, textAlign: 'center', marginTop: 'auto', paddingBottom: 24 },
   safe: { flex: 1, backgroundColor: '#f2f5f9' },
   center: { alignItems: 'center', justifyContent: 'center' },
-  header: { backgroundColor: '#173355', paddingHorizontal: 22, paddingVertical: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  historyControls: { flexDirection: 'row', gap: 6, marginLeft: 10 },
+  header: { backgroundColor: '#173355', paddingHorizontal: 18, paddingTop: 16, paddingBottom: 14, borderBottomLeftRadius: 18, borderBottomRightRadius: 18 },
+  headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  headerIdentity: { flex: 1, marginRight: 12 },
+  actionBar: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  action: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 36, paddingHorizontal: 6, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
+  actionOn: { backgroundColor: 'rgba(39,199,178,0.16)', borderColor: 'rgba(39,199,178,0.45)' },
+  actionDanger: { backgroundColor: 'rgba(240,110,98,0.12)', borderColor: 'rgba(240,110,98,0.4)' },
+  actionPressed: { opacity: 0.7 },
+  actionDisabled: { opacity: 0.5 },
+  actionDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#6f8aa8', marginRight: 6 },
+  actionDotOn: { backgroundColor: '#27c7b2' },
+  actionText: { color: '#e3eef9', fontSize: 12, fontWeight: '700', flexShrink: 1 },
+  actionTextDanger: { color: '#ffb3ab' },
+  actionCount: { minWidth: 17, height: 17, borderRadius: 9, paddingHorizontal: 4, marginLeft: 5, backgroundColor: '#e08a1e', alignItems: 'center', justifyContent: 'center' },
+  actionCountText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  historyControls: { flexDirection: 'row', gap: 6 },
   historyButton: { width: 30, height: 30, borderRadius: 8, backgroundColor: '#245675', alignItems: 'center', justifyContent: 'center' },
   historyButtonOff: { opacity: 0.35 },
   historyButtonText: { color: '#b9fff3', fontSize: 25, lineHeight: 25, fontWeight: '500' },
-  headerRight: { alignItems: 'flex-end', gap: 8 },
+  headerRight: { alignItems: 'flex-end', gap: 6 },
   demoBadge: { backgroundColor: '#5a3fa6', borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4 },
   demoBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   kicker: { color: '#27c7b2', fontSize: 12, fontWeight: '800', letterSpacing: 2 },
   crewName: { color: '#fff', fontSize: 21, fontWeight: '700', marginTop: 4 },
   role: { color: '#a7bdd6', fontSize: 12, marginTop: 3 },
-  online: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#245675', borderRadius: 18, paddingHorizontal: 11, paddingVertical: 7 },
   pendingBadge: { backgroundColor: '#e08a1e', borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4 },
   pendingText: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#27c7b2', marginRight: 6 },
-  onlineText: { color: '#b9fff3', fontSize: 12, fontWeight: '700' },
   content: { padding: 20, paddingBottom: 100 },
   title: { color: '#0f1b2d', fontSize: 26, fontWeight: '800' },
   subtitle: { color: '#7c8da3', fontSize: 14, marginTop: 5, marginBottom: 20 },
@@ -1696,6 +1799,7 @@ const styles = StyleSheet.create({
   mapSelectedTitle: { color: '#173355', fontSize: 15, fontWeight: '800' },
   mapSelectedMeta: { color: '#7c8da3', fontSize: 12 },
   mapGuideText: { color: '#173355', fontSize: 14, fontWeight: '700' },
+  mapArrivedText: { color: '#0e9f8e' },
   mapOfflineNote: { backgroundColor: '#fff7e6', borderRadius: 9, borderWidth: 1, borderColor: '#f0c36d', padding: 10, gap: 3 },
   mapOfflineNoteTitle: { color: '#8a5a00', fontSize: 13, fontWeight: '800' },
   mapOfflineNoteText: { color: '#6b5a3a', fontSize: 12 },
