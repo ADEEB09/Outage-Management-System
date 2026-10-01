@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./app.css";
 import { getCurrentCrew, getMyJobs, logout, updateJobStatus, uploadJobPhoto } from "./lib/api.js";
+import { initWebAuth, login as keycloakLogin } from "./lib/webAuth.js";
 import { navigateTo } from "./lib/navigate.js";
 import { buildMultiStopUrl, openMultiJobRoute } from "./lib/routing.js";
 
@@ -108,7 +109,10 @@ function openMapsNavigation(address) {
 
 export default function App() {
   const role = "crew";
-  const [authenticated, setAuthenticated] = useState(false);
+  // "checking" -> "signed-out" | "signed-in" (Keycloak) | "demo" (no account, sample jobs)
+  const [authState, setAuthState] = useState("checking");
+  const [keycloakReachable, setKeycloakReachable] = useState(true);
+  const authenticated = authState === "signed-in" || authState === "demo";
   const [crew, setCrew] = useState(() => CREWS.find((item) => item.id === "C003"));
   const [jobs, setJobs] = useState([]);
   const [omsSource, setOmsSource] = useState("syncing");
@@ -145,6 +149,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    initWebAuth().then(({ reachable, authenticated: signedIn }) => {
+      setKeycloakReachable(reachable);
+      setAuthState(signedIn ? "signed-in" : "signed-out");
+    });
+  }, []);
+
+  useEffect(() => {
     if (!authenticated) return;
     getCurrentCrew()
       .then((currentCrew) => setCrew(currentCrew))
@@ -153,10 +164,10 @@ export default function App() {
     getMyJobs()
       .then((myJobs) => {
         setJobs(myJobs.map(normalizeOmsJob));
-        setOmsSource("oms");
+        setOmsSource(authState === "demo" ? "demo" : "oms");
       })
       .catch(() => setOmsSource("unavailable"));
-  }, [authenticated]);
+  }, [authenticated, authState]);
 
   const updateJob = (id, changes) => {
     setJobs((current) => {
@@ -172,7 +183,7 @@ export default function App() {
     });
   };
 
-  if (!crew) {
+  if (!crew || authState === "checking") {
     return (
       <main className="app-shell">
         <div className="loading-state">Loading your field workspace...</div>
@@ -186,7 +197,13 @@ export default function App() {
 
   if (role === "crew" && crew) {
     if (!authenticated) {
-      return <CrewEmailLogin onSuccess={() => setAuthenticated(true)} />;
+      return (
+        <CrewKeycloakLogin
+          reachable={keycloakReachable}
+          onSignIn={() => keycloakLogin()}
+          onDemo={() => setAuthState("demo")}
+        />
+      );
     }
 
     return (
@@ -198,8 +215,8 @@ export default function App() {
         online={online}
         queuedUpdates={queuedUpdates}
         onLogout={() => {
-          logout();
-          setAuthenticated(false);
+          if (authState === "signed-in") logout(); // redirects via Keycloak's logout
+          else setAuthState("signed-out");
         }}
       />
     );
@@ -1727,20 +1744,8 @@ function useOnline() {
   return online;
 }
 
-function CrewEmailLogin({ onSuccess }) {
-  const [email, setEmail] = useState("crew01@oms.com");
-  const [password, setPassword] = useState("demo");
-  const [error, setError] = useState("");
-
-  const submit = (event) => {
-    event.preventDefault();
-    if (email.trim().toLowerCase() !== "crew01@oms.com" || password !== "demo") {
-      setError("Use the demo crew credentials shown below.");
-      return;
-    }
-    onSuccess();
-  };
-
+// Same Keycloak realm and crew accounts as the phone app (crew01-crew06).
+function CrewKeycloakLogin({ reachable, onSignIn, onDemo }) {
   return (
     <div className="app-shell">
       <div className="login-screen">
@@ -1750,16 +1755,13 @@ function CrewEmailLogin({ onSuccess }) {
         </div>
         <div className="login-card">
           <h2>Crew sign in</h2>
-          <p className="muted">Sign in to view jobs assigned to your field crew.</p>
-          <form className="email-login-form" onSubmit={submit}>
-            <label htmlFor="crew-email">Email</label>
-            <input id="crew-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required />
-            <label htmlFor="crew-password">Password</label>
-            <input id="crew-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
-            {error && <p className="login-error">{error}</p>}
-            <button className="email-submit" type="submit">Sign in <span>→</span></button>
-          </form>
-          <div className="demo-accounts"><span>Demo crew account</span><button type="button" onClick={() => { setEmail("crew01@oms.com"); setPassword("demo"); setError(""); }}><strong>crew01@oms.com</strong><small>password: demo</small></button></div>
+          <p className="muted">Sign in with your OMS crew account to view the jobs assigned to your crew.</p>
+          {reachable ? (
+            <button className="email-submit" type="button" onClick={onSignIn}>Sign in with OMS account <span>→</span></button>
+          ) : (
+            <p className="login-error">The OMS sign-in server can't be reached. Check that Keycloak is running, or continue in demo mode.</p>
+          )}
+          <div className="demo-accounts"><span>Testing without an account?</span><button type="button" onClick={onDemo}><strong>Continue in demo mode</strong><small>sample jobs, nothing is sent to the OMS</small></button></div>
         </div>
         <div className="login-footer">Crew access only · Offline capable</div>
       </div>

@@ -4,11 +4,11 @@
 // and their screens) should never call fetch() directly — only these
 // functions. That keeps the backend swappable without touching any screen.
 //
-// This file works for BOTH builds:
-//   - Web (Vite):        relative "/api/..." calls, cookie session (credentials: include)
-//   - Native (Expo/RN):  absolute calls to the configured server (lib/server.js), Keycloak bearer token
-// `Platform.OS` (via react-native-web on the web build) tells us which mode
-// we're in, so screens can share the exact same function signatures.
+// Both builds call the same /api/mobile/... routes with a Keycloak bearer
+// token (lib/session.js: expo-auth-session natively, keycloak-js on web):
+//   - Web (Vite):        relative "/api/..." calls through the dev/nginx proxy
+//   - Native (Expo/RN):  absolute calls to the configured server (lib/server.js)
+// Signed out, both fall back to the demo crew and jobs below.
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiBase, loadServer } from "./server";
@@ -17,8 +17,8 @@ const WEB_API_URL = "/api";
 const JOBS_CACHE_KEY = "oms-jobs-cache";
 const JOBS_CACHE_SYNCED_AT_KEY = "oms-jobs-cache-synced-at";
 
-async function nativeAuth() {
-  return import("./auth");
+async function session() {
+  return import("./session");
 }
 
 // Cache the last successfully-fetched job list, including coordinates, so
@@ -54,8 +54,8 @@ export async function getJobsLastSyncedAt() {
 
 /* ========================================================
    DEMO FALLBACK DATA
-   Used only when the real backend can't be reached, so the app is still
-   demoable without a live backend/Keycloak instance.
+   Used only when nobody is signed in, so the app is still demoable without
+   a live backend/Keycloak instance. A signed-in crew never sees it.
 ========================================================= */
 
 const DEMO_CREW = {
@@ -79,25 +79,12 @@ let demoJobs = [
    LOW-LEVEL REQUEST HELPERS
 ========================================================= */
 
-// Web: same-origin, cookie-authenticated session (existing behaviour).
-async function webReq(path, method = "GET", body) {
-  const response = await fetch(WEB_API_URL + path, {
+async function req(path, method = "GET", body) {
+  const { freshAuthHeader } = await session();
+  if (!IS_WEB) await loadServer();
+  const response = await fetch((IS_WEB ? WEB_API_URL : apiBase()) + path, {
     method,
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
-// Native: absolute backend URL, Keycloak bearer token (per the OMS mobile guide).
-async function nativeReq(path, method = "GET", body) {
-  const { authHeader } = await nativeAuth();
-  await loadServer();
-  const response = await fetch(apiBase() + path, {
-    method,
-    headers: { "Content-Type": "application/json", ...authHeader() },
+    headers: { "Content-Type": "application/json", ...(await freshAuthHeader()) },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) throw new Error(await response.text());
@@ -129,15 +116,12 @@ function normalizeOmsJob(job) {
    PUBLIC API — same function names/shapes on web and native
 ========================================================= */
 
-// GET current crew record.
-// Web:    GET /api/me                         (cookie session)
-// Native: GET /api/mobile/crews/:crewId        (Keycloak bearer token)
+// GET /api/mobile/crews/:crewId — the signed-in crew's record.
 export async function getCurrentCrew() {
-  if (IS_WEB) return webReq("/me").catch(() => DEMO_CREW);
-  const { isAuthenticated, myCrewId, currentUsername } = await nativeAuth();
+  const { isAuthenticated, myCrewId, currentUsername } = await session();
   if (!isAuthenticated()) return DEMO_CREW;
   try {
-    return await nativeReq("/mobile/crews/" + myCrewId());
+    return await req("/mobile/crews/" + myCrewId());
   } catch {
     // Signed in but the backend is unreachable: keep the real identity
     // (so tracking and uploads still go to the right crew) rather than
@@ -146,21 +130,12 @@ export async function getCurrentCrew() {
   }
 }
 
-// GET this crew's jobs + incidents.
-// Web:    GET /api/jobs
-// Native: GET /api/mobile/crews/:crewId/jobs
+// GET /api/mobile/crews/:crewId/jobs — this crew's jobs + incidents.
 export async function getMyJobs() {
+  const { isAuthenticated, myCrewId } = await session();
+  if (!isAuthenticated()) return demoJobs;
   try {
-    if (IS_WEB) {
-      const payload = await webReq("/jobs");
-      const jobs = Array.isArray(payload) ? payload : payload.jobs ?? [];
-      const result = jobs.length ? jobs : demoJobs;
-      if (jobs.length) await cacheJobs(result);
-      return result;
-    }
-    const { isAuthenticated, myCrewId } = await nativeAuth();
-    if (!isAuthenticated()) return demoJobs;
-    const jobs = await nativeReq("/mobile/crews/" + myCrewId() + "/jobs");
+    const jobs = await req("/mobile/crews/" + myCrewId() + "/jobs");
     const mapped = (jobs ?? []).map(normalizeOmsJob);
     await cacheJobs(mapped);
     return mapped;
@@ -170,49 +145,30 @@ export async function getMyJobs() {
     // last-known assignments. A signed-in crew never gets the demo set:
     // sample jobs would look like real work and hide the outage.
     const cached = await readCachedJobs();
-    if (cached && cached.length) return cached;
-    const signedIn = !IS_WEB && (await nativeAuth()).isAuthenticated();
-    return signedIn ? [] : demoJobs;
+    return cached ?? [];
   }
 }
 
-export async function updateMyJob(id, job) {
-  return webReq(`/jobs/${id}`, "PUT", job);
-}
-
-// PATCH status + GPS for a job.
-// Web:    PUT  /api/jobs/:id                 (whole job object, existing behaviour)
-// Native: PATCH /api/mobile/jobs/:id/status  { status, lat, lon }
-export async function updateJobStatus(id, status, location = {}, job) {
-  if (IS_WEB) {
-    const updatedJob = { ...job, status, location };
-    demoJobs = demoJobs.map((item) => (item.id === id ? updatedJob : item));
-    try {
-      return await updateMyJob(id, updatedJob);
-    } catch {
-      return updatedJob;
-    }
+// PATCH /api/mobile/jobs/:id/status  { status, lat, lon }
+export async function updateJobStatus(id, status, location = {}) {
+  const { isAuthenticated } = await session();
+  if (!isAuthenticated()) {
+    // Demo mode: keep the change locally so the demo flow still advances.
+    demoJobs = demoJobs.map((item) => (item.id === id ? { ...item, status } : item));
+    return demoJobs.find((item) => item.id === id);
   }
-  return nativeReq(`/mobile/jobs/${id}/status`, "PATCH", {
+  return req(`/mobile/jobs/${id}/status`, "PATCH", {
     status,
     lat: location.lat ?? null,
     lon: location.lon ?? null,
   });
 }
 
-// POST a photo for a job (native only — the web app uses local object URLs).
-// Native: POST /api/mobile/jobs/:id/photos  { dataUrl, lat, lon, note }
+// POST /api/mobile/jobs/:id/photos  { dataUrl, lat, lon, note }
 export async function uploadJobPhoto(id, dataUrl, location = {}, note, metadata = {}) {
-  if (IS_WEB) {
-    return webReq(`/mobile/jobs/${id}/photos`, "POST", {
-      dataUrl,
-      lat: location.lat ?? null,
-      lon: location.lon ?? null,
-      note: note ?? null,
-      ...metadata,
-    });
-  }
-  return nativeReq(`/mobile/jobs/${id}/photos`, "POST", {
+  // Demo mode has no account to upload as; the photo stays on the device.
+  if (!(await session()).isAuthenticated()) return { id: "demo-photo", job_id: id, demo: true };
+  return req(`/mobile/jobs/${id}/photos`, "POST", {
     dataUrl,
     lat: location.lat ?? null,
     lon: location.lon ?? null,
@@ -221,38 +177,37 @@ export async function uploadJobPhoto(id, dataUrl, location = {}, note, metadata 
   });
 }
 
+// POST /api/mobile/crews/:crewId/tracking  { state: "on" | "off", reason }
+// Tells dispatch whether continuous tracking is running; an unexpected "off"
+// raises an alert on the OMS dashboard. Demo mode reports nothing.
+export async function reportTrackingState(crewId, state, reason) {
+  if (!(await session()).isAuthenticated()) return null;
+  return req(`/mobile/crews/${crewId}/tracking`, "POST", { state, reason: reason ?? null });
+}
+
 export async function getJobMessages(jobId) {
-  if (IS_WEB) return webReq(`/mobile/jobs/${jobId}/messages`);
-  return nativeReq(`/mobile/jobs/${jobId}/messages`);
+  return req(`/mobile/jobs/${jobId}/messages`);
 }
 
 export async function getCrewMessages(crewId) {
-  if (IS_WEB) return webReq(`/mobile/crews/${crewId}/messages`);
-  return nativeReq(`/mobile/crews/${crewId}/messages`);
+  return req(`/mobile/crews/${crewId}/messages`);
 }
 
 export async function getJobPhotos(jobId) {
-  if (IS_WEB) return webReq(`/mobile/jobs/${jobId}/photos`);
-  return nativeReq(`/mobile/jobs/${jobId}/photos`);
+  return req(`/mobile/jobs/${jobId}/photos`);
 }
 
 export async function saveAssetScan(jobId, scan) {
-  if (IS_WEB) return webReq(`/mobile/jobs/${jobId}/assets/scans`, "POST", scan);
-  return nativeReq(`/mobile/jobs/${jobId}/assets/scans`, "POST", scan);
+  return req(`/mobile/jobs/${jobId}/assets/scans`, "POST", scan);
 }
 
 export async function getAssetScans(jobId) {
-  if (IS_WEB) return webReq(`/mobile/jobs/${jobId}/assets/scans`);
-  return nativeReq(`/mobile/jobs/${jobId}/assets/scans`);
+  return req(`/mobile/jobs/${jobId}/assets/scans`);
 }
 
 export async function logout() {
-  if (IS_WEB) {
-    window.location.reload();
-    return;
-  }
-  const { logout: authLogout } = await import("./auth");
-  await authLogout();
-  // The cached job list belongs to the crew that just signed out.
+  // The cached job list belongs to the crew that is signing out.
   await AsyncStorage.multiRemove([JOBS_CACHE_KEY, JOBS_CACHE_SYNCED_AT_KEY]).catch(() => {});
+  const { logout: sessionLogout } = await session();
+  await sessionLogout(); // on web this redirects through Keycloak's logout
 }

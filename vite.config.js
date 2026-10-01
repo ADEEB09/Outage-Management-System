@@ -13,6 +13,8 @@ export default defineConfig({
     alias: {
       'react-native': 'react-native-web',
     },
+    // Like Metro on web: lib/session.web.js wins over lib/session.js.
+    extensions: ['.web.js', '.web.jsx', '.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
   },
   plugins: [
     react(),
