@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { api } from '../lib/api.js';
+import { api, socket } from '../lib/api.js';
 import { Icon, SevBadge, StatusBadge, useLiveRefresh } from '../lib/ui.jsx';
 
 const SEVC = { critical: '#e23b2e', high: '#ef9021', medium: '#3b82f6', low: '#22b06b' };
@@ -9,6 +9,8 @@ const CREWC = { available: '#0fb39d', in_service: '#3b82f6', in_transit: '#ef902
 const PALETTE = ['#3b82f6', '#0fb39d', '#e0742b', '#8b5cf6', '#22b06b', '#e0447a', '#d1a017', '#2fa3a3', '#7a9e2e', '#c2622a', '#5b6ee0', '#c94f9a'];
 const feederColor = (name) => { if (!name) return '#9fb0c4'; let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff; return PALETTE[h % PALETTE.length]; };
 const hav = (a, b) => { const R = 6371, dLat = (b[0] - a[0]) * Math.PI / 180, dLon = (b[1] - a[1]) * Math.PI / 180; const s = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLon / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(s)); };
+// compass bearing a→b in degrees (0 = north), for pointing the crew arrow
+const bearing = (a, b) => { const r = Math.PI / 180, y = Math.sin((b.lng - a.lng) * r) * Math.cos(b.lat * r), x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lng - a.lng) * r); return (Math.atan2(y, x) / r + 360) % 360; };
 const clean = (n) => (n || '').replace(/33\/11 kV/i, '').replace(/S\/s/i, '').trim();
 
 const LAYER_GROUPS = [
@@ -33,6 +35,7 @@ export default function NetworkMap() {
   const boxRef = useRef();
   const mapRef = useRef(null);
   const groups = useRef({});
+  const crewMarkers = useRef(new Map()); // crew id -> { m, crew, at, heading, raf }
   const feederIdx = useRef({});
   const hiRef = useRef(null);
   const selRef = useRef(null); selRef.current = sel;
@@ -40,7 +43,18 @@ export default function NetworkMap() {
   useEffect(() => { api.network().then(setNet).catch(() => setNet({ error: true })); }, []);
   const loadLive = () => { api.incidents().then(setInc); api.crews().then(setCrews); };
   useEffect(() => { loadLive(); }, []);
-  useLiveRefresh(['crew.updated', 'oms.incident.updated', 'oms.incident.created'], loadLive);
+  useLiveRefresh(['oms.incident.updated', 'oms.incident.created'], () => api.incidents().then(setInc));
+  // A crew.updated event carries the full crew row; merge it in place rather
+  // than refetching everything, so position fixes reach the map immediately.
+  useEffect(() => {
+    const h = (c) => {
+      if (!c || !c.id) return;
+      setCrews((list) => (list.some((x) => x.id === c.id) ? list.map((x) => (x.id === c.id ? { ...x, ...c } : x)) : [...list, c]));
+      setSel((s) => (s && s.kind === 'crew' && s.id === c.id ? { ...s, ...c } : s));
+    };
+    socket.on('crew.updated', h);
+    return () => socket.off('crew.updated', h);
+  }, []);
   useEffect(() => { if (sel && sel.kind === 'incident') setSel((s) => ({ ...s, ...(inc.find((i) => i.id === s.id) || {}) })); }, [inc]); // eslint-disable-line
 
   const feeders = useMemo(() => {
@@ -143,6 +157,7 @@ export default function NetworkMap() {
 
     groups.current.incidents = mk();
     groups.current.crews = mk();
+    crewMarkers.current.clear();
     groups.current.built = true;
     // add the default-on layers
     ALL.forEach(([k, , on]) => { if (on && groups.current[k]) groups.current[k].addTo(map); });
@@ -159,14 +174,56 @@ export default function NetworkMap() {
     });
   }, [inc, ready]);
 
-  // rebuild crew markers on live updates
+  // Crew markers persist per crew id and glide to each new fix (Uber-style)
+  // instead of being rebuilt, with the arrow turned to the direction of travel.
   useEffect(() => {
     const g = groups.current.crews; if (!g) return;
-    g.clearLayers();
+    const live = crewMarkers.current;
+    const seen = new Set();
     crews.filter((c) => c.lat && c.lon).forEach((c) => {
-      const m = L.marker([c.lat, c.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-crew" style="--c:${CREWC[c.status] || '#9fb0c4'}"></div>`, iconSize: [16, 14], iconAnchor: [8, 10] }), zIndexOffset: 900 });
-      m.on('click', () => select('crew', c, c.name)); m.addTo(g);
+      seen.add(c.id);
+      const color = CREWC[c.status] || '#9fb0c4';
+      let e = live.get(c.id);
+      if (!e) {
+        const m = L.marker([c.lat, c.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-crew-wrap"><div class="mk-crew" style="--c:${color}"></div></div>`, iconSize: [16, 16], iconAnchor: [8, 8] }), zIndexOffset: 900 });
+        e = { m, crew: c, at: Date.now(), heading: 0, raf: 0 };
+        m.on('click', () => select('crew', e.crew, e.crew.name));
+        // Leaflet rebuilds the icon element when the layer is toggled back on
+        m.on('add', () => {
+          const wrap = m.getElement()?.querySelector('.mk-crew-wrap');
+          if (wrap) wrap.style.transform = `rotate(${e.heading}deg)`;
+          wrap?.firstChild?.style.setProperty('--c', CREWC[e.crew.status] || '#9fb0c4');
+        });
+        m.addTo(g);
+        live.set(c.id, e);
+        return;
+      }
+      e.crew = c;
+      const el = e.m.getElement()?.querySelector('.mk-crew');
+      if (el) el.style.setProperty('--c', color);
+      const from = e.m.getLatLng(), to = L.latLng(c.lat, c.lon);
+      if (from.distanceTo(to) < 1) return;
+      if (from.distanceTo(to) > 3) {
+        // turn the short way round (350° → 10° is +20°, not -340°)
+        e.heading += ((bearing(from, to) - e.heading) % 360 + 540) % 360 - 180;
+        const wrap = e.m.getElement()?.querySelector('.mk-crew-wrap');
+        if (wrap) wrap.style.transform = `rotate(${e.heading}deg)`;
+      }
+      // Spread the glide over the gap since the previous fix so movement looks
+      // continuous; cap it so a crew that was offline for a while doesn't crawl.
+      const now = Date.now();
+      const dur = Math.min(Math.max(now - e.at, 800), 8000);
+      e.at = now;
+      cancelAnimationFrame(e.raf);
+      const t0 = performance.now();
+      const step = (t) => {
+        const k = Math.min((t - t0) / dur, 1);
+        e.m.setLatLng([from.lat + (to.lat - from.lat) * k, from.lng + (to.lng - from.lng) * k]);
+        if (k < 1) e.raf = requestAnimationFrame(step);
+      };
+      e.raf = requestAnimationFrame(step);
     });
+    live.forEach((e, id) => { if (!seen.has(id)) { cancelAnimationFrame(e.raf); g.removeLayer(e.m); live.delete(id); } });
   }, [crews, ready]);
 
   // toggle layers on/off

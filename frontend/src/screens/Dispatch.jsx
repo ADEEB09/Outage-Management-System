@@ -2,6 +2,13 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { Icon, SevBadge, timeAgo, useLiveRefresh, toast } from '../lib/ui.jsx';
 
+// Why a crew's continuous tracking is off (reported by the crew app).
+const TRACKING_OFF_TEXT = {
+  permission_denied: 'location permission was denied',
+  background_permission_denied: 'background location ("Allow all the time") was denied',
+  turned_off: 'the crew turned tracking off',
+};
+
 export default function Dispatch() {
   const [inc, setInc] = useState([]);
   const [crews, setCrews] = useState([]);
@@ -9,7 +16,7 @@ export default function Dispatch() {
 
   const load = () => { api.incidents().then(setInc); api.crews().then(setCrews); };
   useEffect(() => { load(); }, []);
-  useLiveRefresh(['oms.incident.updated', 'oms.incident.created', 'crew.updated', 'crew.job.updated'], load);
+  useLiveRefresh(['oms.incident.updated', 'oms.incident.created', 'crew.updated', 'crew.job.updated', 'crew.tracking.changed'], load);
 
   const unassigned = inc.filter((i) => !i.crew_id && ['open', 'dispatched'].includes(i.status));
   const available = crews.filter((c) => c.status === 'available');
@@ -63,7 +70,12 @@ export default function Dispatch() {
               <div key={c.id} style={{ border: '1px solid var(--line)', borderRadius: 9, padding: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
                 <span style={{ width: 10, height: 10, borderRadius: '50%', flex: '0 0 auto', background: { available: 'var(--live)', in_service: 'var(--med)', in_transit: 'var(--high)', on_break: 'var(--faint)' }[c.status] }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 500 }}>{c.name} <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 12 }}>· {c.lead}</span></div>
+                  <div style={{ fontWeight: 500 }}>
+                    {c.name} <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 12 }}>· {c.lead}</span>
+                    {c.tracking_state === 'off' && TRACKING_OFF_TEXT[c.tracking_reason] && (
+                      <span title={`${TRACKING_OFF_TEXT[c.tracking_reason]}, ${timeAgo(c.tracking_changed_at)}`} style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 600, color: 'var(--crit)', background: 'var(--crit-bg)', borderRadius: 4, padding: '1px 6px' }}>Tracking off</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
                     <Icon name="pin" size={13} />{c.location}{c.job_id && ` · on ${c.job_id.slice(-6)}`}
                   </div>
