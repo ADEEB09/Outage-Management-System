@@ -27,6 +27,8 @@ spec:
               value: {{ .Values.backend.env.nodeEnv | quote }}
             - name: PORT
               value: {{ .Values.backend.port | quote }}
+            - name: SIMULATOR
+              value: {{ .Values.backend.env.simulator | quote }}
             # DATABASE_URL, REDIS_URL, JWT secrets etc. come from a real
             # Kubernetes Secret, never hardcoded here. Create it once with:
             #   kubectl create secret generic oms-backend-secrets \

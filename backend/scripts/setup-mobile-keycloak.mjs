@@ -71,11 +71,14 @@ const MOBILE_CLIENT = {
   serviceAccountsEnabled: false,
   // The app redirects to omscrew://auth (src/lib/auth.js). A bare
   // "omscrew://" is not a valid URI to Keycloak, hence the path.
-  redirectUris: ['omscrew://*', 'exp://*'],
-  webOrigins: [],
+  // http://localhost:5174 is the web build of the same app (src/lib/webAuth.js,
+  // vite.config.js); keycloak-js needs PKCE, so it is served from localhost.
+  redirectUris: ['omscrew://*', 'exp://*', 'http://localhost:5174/*'],
+  // "+" = allow CORS from the redirect URIs' origins (the web token calls).
+  webOrigins: ['+'],
   attributes: {
     'pkce.code.challenge.method': 'S256',
-    'post.logout.redirect.uris': 'omscrew://*##exp://*',
+    'post.logout.redirect.uris': 'omscrew://*##exp://*##http://localhost:5174/*',
   },
 };
 

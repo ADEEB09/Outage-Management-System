@@ -20,23 +20,46 @@
 //   TILE_ATTRIBUTION  default "© OpenStreetMap contributors" (legally required
 //                     for OSM data; shown on the map).
 //   TILES_DIR         default backend/tiles (must match the backend's TILES_DIR).
+//   TILE_FORMAT       png (default, stored as served) or webp (re-encoded with
+//                     sharp; about half the size — use it for the 2x HD pack).
+//   TILE_QUALITY      WebP quality, default 75.
+//
+// HD pack for phone screens (renderer at 2x, see tile-server/docker-compose.yml):
+//   TILE_SOURCE_URL="http://localhost:8091/tile/{z}/{x}/{y}.png" TILE_FORMAT=webp npm run tiles:fetch
 //
 // Safe to re-run: existing tiles are skipped (resume), files are written
 // atomically, and the pack version is a content hash, so phones only
 // re-download when tiles actually changed.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // [west, south, east, north]. City regions get street-level detail; the
-// corridor gives a lighter overview of the highways between the cities.
-export const REGIONS = [
+// corridor covers the highways between the cities (to zoom 15, enough to
+// read junctions and village roads on the way to a site).
+const SERVICE_REGIONS = [
   { id: 'dehradun', name: 'Dehradun', bbox: [77.92, 30.22, 78.13, 30.42], minZoom: 10, maxZoom: 16 },
   { id: 'rishikesh', name: 'Rishikesh', bbox: [78.22, 30.03, 78.36, 30.16], minZoom: 10, maxZoom: 16 },
   { id: 'haridwar', name: 'Haridwar', bbox: [78.0, 29.86, 78.22, 30.0], minZoom: 10, maxZoom: 16 },
-  { id: 'corridor', name: 'Dehradun–Rishikesh–Haridwar corridor', bbox: [77.85, 29.8, 78.45, 30.5], minZoom: 8, maxZoom: 13 },
+  { id: 'corridor', name: 'Dehradun–Rishikesh–Haridwar corridor', bbox: [77.85, 29.8, 78.45, 30.5], minZoom: 8, maxZoom: 15 },
 ];
+
+// Extra areas for testing the app away from the service area, opt-in with
+// PACK_TEST_REGIONS=delhi-ncr (set it for tiles:fetch AND roads:build). Each
+// names the OSM extract in tile-server/ its roads come from; its tiles need a
+// renderer loaded with that extract (see tile-server/docker-compose.yml).
+const TEST_REGIONS = [
+  // BBBike "NewDelhi" extract: Delhi, Noida, most of Gurgaon.
+  //   curl -L -o tile-server/ncr.osm.pbf https://download.bbbike.org/osm/bbbike/NewDelhi/NewDelhi.osm.pbf
+  { id: 'delhi-ncr', name: 'Delhi NCR (test)', bbox: [76.98, 28.44, 77.49, 28.73], minZoom: 8, maxZoom: 16, pbf: 'ncr.osm.pbf' },
+];
+
+const testIds = (process.env.PACK_TEST_REGIONS || '').split(',').map((s) => s.trim()).filter(Boolean);
+for (const id of testIds) {
+  if (!TEST_REGIONS.some((r) => r.id === id)) throw new Error(`Unknown PACK_TEST_REGIONS entry "${id}"`);
+}
+export const REGIONS = [...SERVICE_REGIONS, ...TEST_REGIONS.filter((r) => testIds.includes(r.id))];
 
 const SOURCE = process.env.TILE_SOURCE_URL || '';
 const ATTRIBUTION = process.env.TILE_ATTRIBUTION || '© OpenStreetMap contributors';
@@ -48,6 +71,17 @@ const CONCURRENCY = Number(process.env.TILE_CONCURRENCY || 4);
 const IDENTICAL_TILE_LIMIT = 25;
 const DRY_RUN = process.argv.includes('--dry-run');
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const FORMAT = process.env.TILE_FORMAT === 'webp' ? 'webp' : 'png';
+const QUALITY = Number(process.env.TILE_QUALITY || 75);
+let tilePixels = null; // source tile width: 256 standard, 512 for the 2x HD renderer
+
+// Stored tile bytes for a fetched PNG: as-is, or re-encoded to WebP.
+async function encodeTile(png) {
+  if (!tilePixels) tilePixels = png.readUInt32BE(16);
+  if (FORMAT === 'png') return png;
+  const { default: sharp } = await import('sharp');
+  return sharp(png).webp({ quality: QUALITY, effort: 5 }).toBuffer();
+}
 
 const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
 const lat2y = (lat, z) => {
@@ -101,7 +135,7 @@ async function hashPack(tiles) {
   let count = 0;
   let bytes = 0;
   for (const { z, x, y } of tiles) {
-    const buf = await readFile(join(OUT, `${z}/${x}/${y}.png`)).catch(() => null);
+    const buf = await readFile(join(OUT, `${z}/${x}/${y}.${FORMAT}`)).catch(() => null);
     if (!buf) continue;
     hash.update(`${z}/${x}/${y}:`).update(buf);
     count++;
@@ -140,7 +174,7 @@ async function main() {
   const queue = [...tiles];
   const worker = async () => {
     for (let t = queue.shift(); t; t = queue.shift()) {
-      const path = join(OUT, `${t.z}/${t.x}/${t.y}.png`);
+      const path = join(OUT, `${t.z}/${t.x}/${t.y}.${FORMAT}`);
       if (!(await exists(path))) {
         try {
           const buf = await fetchTile(t);
@@ -155,7 +189,7 @@ async function main() {
                 );
               }
             }
-            await writeAtomic(path, buf);
+            await writeAtomic(path, await encodeTile(buf));
             fetched++;
           } else missing++;
         } catch (err) {
@@ -179,13 +213,17 @@ async function main() {
   }
 
   const { version, count, bytes } = await hashPack(tiles);
+  // A resumed run may fetch nothing new; keep what the previous run recorded.
+  const previous = await readFile(join(OUT, 'manifest.json'), 'utf8').then(JSON.parse, () => null);
   const all = regions.map((r) => r.bbox);
   const manifest = {
     version,
     generatedAt: new Date().toISOString(),
     source: new URL(SOURCE.replace(/[{}]/g, '')).hostname,
     attribution: ATTRIBUTION,
-    format: 'png',
+    format: FORMAT,
+    // 512 = rendered at 2x for high-density screens (shown at 256 CSS px).
+    tilePixels: tilePixels || (previous?.format === FORMAT ? previous.tilePixels : null) || 256,
     minZoom: Math.min(...regions.map((r) => r.minZoom)),
     maxZoom: Math.max(...regions.map((r) => r.maxZoom)),
     bounds: [
@@ -194,15 +232,20 @@ async function main() {
       Math.max(...all.map((b) => b[2])),
       Math.max(...all.map((b) => b[3])),
     ],
-    regions,
+    regions: regions.map(({ pbf, ...region }) => region),
     tileCount: count,
     totalBytes: bytes,
   };
+  // Keep the road graph entry written by build-road-graph.mjs.
+  if (previous?.roads) manifest.roads = previous.roads;
   await writeAtomic(join(OUT, 'manifest.json'), Buffer.from(JSON.stringify(manifest, null, 2)));
   console.log(`Pack ${version}: ${count} tiles, ${(bytes / 1048576).toFixed(1)} MB -> ${OUT}`);
 }
 
-main().catch((err) => {
-  console.error(`\n${err.message}`);
-  process.exit(1);
-});
+// Only when run directly: build-road-graph.mjs imports REGIONS from here.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(`\n${err.message}`);
+    process.exitCode = 1;
+  });
+}

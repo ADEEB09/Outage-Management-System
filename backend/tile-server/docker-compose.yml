@@ -8,12 +8,15 @@
 #        curl -L -o uttarakhand.osm.pbf https://download.openstreetmap.fr/extracts/asia/india/uttarakhand-latest.osm.pbf
 #   2. Import it into the renderer's database (~10–30 min, first time only):
 #        docker compose run --rm import
-#   3. Start the renderer:
-#        docker compose up -d tiles
-#   4. Generate the pack (from backend/):
-#        TILE_SOURCE_URL="http://localhost:8090/tile/{z}/{x}/{y}.png" npm run tiles:fetch
+#   3. Start the HD (2x) renderer — sharp on phone screens:
+#        docker compose up -d tiles-hd
+#   4. Generate the pack (from backend/), then the road graph:
+#        TILE_SOURCE_URL="http://localhost:8091/tile/{z}/{x}/{y}.png" TILE_FORMAT=webp npm run tiles:fetch
+#        npm run roads:build
 #   5. Stop it again — it's not needed at runtime:
-#        docker compose stop tiles
+#        docker compose stop tiles-hd
+#   (The plain `tiles` service on 8090 renders the older standard-resolution
+#    PNG pack, if ever needed.)
 #
 # Map data © OpenStreetMap contributors (ODbL); the app shows this credit.
 services:
@@ -39,6 +42,59 @@ services:
       - osm-data:/data/database/
     shm_size: 256m
 
+  # Same map, rendered at 2x for phone screens (512 px tiles, labels and
+  # lines scaled to match), so it stays sharp on high-density displays.
+  # Uses the same imported database as `tiles`. Generate the HD pack with:
+  #   TILE_SOURCE_URL="http://localhost:8091/tile/{z}/{x}/{y}.png" TILE_FORMAT=webp npm run tiles:fetch
+  tiles-hd:
+    image: overv/openstreetmap-tile-server:latest
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - sed -i -E 's/^TILESIZE=.*/TILESIZE=512\nSCALE=2.0/' /etc/renderd.conf && exec /run.sh run
+    environment:
+      THREADS: 8
+    ports:
+      - "127.0.0.1:8091:80"
+    volumes:
+      - osm-data:/data/database/
+    shm_size: 256m
+
+  # Delhi NCR test region (PACK_TEST_REGIONS=delhi-ncr, see
+  # scripts/fetch-tiles.mjs), in its own database so the Uttarakhand one is
+  # untouched. From this folder:
+  #   curl -L -o ncr.osm.pbf https://download.bbbike.org/osm/bbbike/NewDelhi/NewDelhi.osm.pbf
+  #   docker compose run --rm import-ncr
+  #   docker compose up -d tiles-hd-ncr
+  # then from backend/ (existing Uttarakhand tiles are kept, only NCR is fetched):
+  #   PACK_TEST_REGIONS=delhi-ncr TILE_SOURCE_URL="http://localhost:8092/tile/{z}/{x}/{y}.png" TILE_FORMAT=webp npm run tiles:fetch
+  #   PACK_TEST_REGIONS=delhi-ncr npm run roads:build
+  import-ncr:
+    image: overv/openstreetmap-tile-server:latest
+    command: import
+    environment:
+      THREADS: 4
+      OSM2PGSQL_EXTRA_ARGS: "-C 1500"
+    volumes:
+      - ./ncr.osm.pbf:/data/region.osm.pbf:ro
+      - osm-ncr-data:/data/database/
+    profiles: ["import"]
+
+  tiles-hd-ncr:
+    image: overv/openstreetmap-tile-server:latest
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - sed -i -E 's/^TILESIZE=.*/TILESIZE=512\nSCALE=2.0/' /etc/renderd.conf && exec /run.sh run
+    environment:
+      THREADS: 4
+    ports:
+      - "127.0.0.1:8092:80"
+    volumes:
+      - osm-ncr-data:/data/database/
+    shm_size: 256m
+    profiles: ["ncr"]
+
 volumes:
   osm-data:
     name: osm-data
+  osm-ncr-data:
+    name: osm-ncr-data

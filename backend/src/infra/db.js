@@ -207,6 +207,9 @@ export async function migrate() {
   `);
   await db.none(`
     ALTER TABLE alarms    ADD COLUMN IF NOT EXISTS incident_id TEXT REFERENCES incidents(id);
+    ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_state TEXT;
+    ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_reason TEXT;
+    ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_changed_at TIMESTAMPTZ;
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS data_url TEXT;
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS image_data BYTEA;
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'image/webp';

@@ -365,6 +365,7 @@ tr.row-hot td{background:var(--crit-bg)}
 .mk-ss-d::after{content:"";position:absolute;inset:3px;background:#ffd23f;border-radius:1px}
 .mk-ss-l{font-family:var(--disp,sans-serif);font-weight:700;font-size:10.5px;color:#12294a;background:rgba(255,255,255,.92);padding:1px 6px;border-radius:6px;border:1px solid #d7e0ea;box-shadow:0 1px 3px rgba(15,27,45,.15)}
 .mk-ptx{width:11px;height:11px;background:#e0742b;border:1.5px solid #fff;border-radius:2px;box-shadow:0 1px 3px rgba(15,27,45,.4)}
+.mk-crew-wrap{width:16px;height:16px;display:flex;align-items:center;justify-content:center;transition:transform .6s ease}
 .mk-crew{width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:14px solid var(--c);filter:drop-shadow(0 1px 2px rgba(15,27,45,.4))}
 .mk-inc{width:16px;height:16px;border-radius:50%;background:var(--c);border:2.5px solid #fff;box-shadow:0 1px 5px rgba(15,27,45,.4);position:relative}
 .mk-inc.live::before{content:"";position:absolute;inset:-6px;border-radius:50%;background:var(--c);opacity:.35;animation:incpulse 2s ease-out infinite;z-index:-1}

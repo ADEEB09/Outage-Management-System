@@ -15,6 +15,9 @@ import { enqueueLocations, flushLocations } from "./locationQueue";
 
 const TASK_NAME = "oms-crew-location-task";
 const CREW_ID_KEY = "oms-tracking-crew-id";
+// Set when the crew switches tracking off themselves, so the automatic start
+// on sign-in doesn't override that choice until the next sign-in.
+const PAUSED_BY_CREW_KEY = "oms-tracking-paused-by-crew";
 let currentCrewId = null;
 
 // The background task must be defined at module scope (not inside a
@@ -47,27 +50,32 @@ TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
   await flushLocations().catch(() => {});
 });
 
-// Call once, after the crew member has a real session and has granted
-// background location permission.
+// Call once the crew member has a real session. Asks for location permission
+// if needed. Resolves to { on, reason } — reason says why it is off:
+// "permission_denied" or "background_permission_denied".
 export async function startCrewTracking(crewId) {
   currentCrewId = crewId;
   await AsyncStorage.setItem(CREW_ID_KEY, crewId).catch(() => {});
 
+  // Already running (e.g. from an older app version): skip the permission
+  // prompts but still re-start below, so the task picks up current options.
   const alreadyRunning = await Location.hasStartedLocationUpdatesAsync(TASK_NAME).catch(() => false);
-  if (alreadyRunning) return true;
+  if (!alreadyRunning) {
+    const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+    if (fgStatus !== "granted") return { on: false, reason: "permission_denied" };
 
-  const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
-  if (fgStatus !== "granted") return false;
-
-  const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-  if (bgStatus !== "granted") return false;
+    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+    if (bgStatus !== "granted") return { on: false, reason: "background_permission_denied" };
+  }
 
   await Location.startLocationUpdatesAsync(TASK_NAME, {
     // High = satellite GPS. "Balanced" leans on Wi-Fi/cell-tower lookups,
     // which degrade badly exactly when the crew has no data connection.
     accuracy: Location.Accuracy.High,
-    timeInterval: 30000, // every 30 seconds
-    distanceInterval: 50, // or every 50 meters moved, whichever comes first
+    // Frequent enough for dispatch to watch the crew move live on the map.
+    // A parked crew sends nothing new: a fix needs both 5 s elapsed and 10 m moved.
+    timeInterval: 5000,
+    distanceInterval: 10,
     pausesUpdatesAutomatically: false, // iOS: don't silently stop when parked at a site
     activityType: Location.ActivityType.OtherNavigation,
     showsBackgroundLocationIndicator: true,
@@ -77,7 +85,7 @@ export async function startCrewTracking(crewId) {
       killServiceOnDestroy: false,
     },
   });
-  return true;
+  return { on: true };
 }
 
 export async function stopCrewTracking() {
@@ -92,4 +100,24 @@ export async function stopCrewTracking() {
 
 export async function isCrewTrackingActive() {
   return Location.hasStartedLocationUpdatesAsync(TASK_NAME).catch(() => false);
+}
+
+export async function setTrackingPausedByCrew(paused) {
+  if (paused) await AsyncStorage.setItem(PAUSED_BY_CREW_KEY, "1").catch(() => {});
+  else await AsyncStorage.removeItem(PAUSED_BY_CREW_KEY).catch(() => {});
+}
+
+// Start tracking for a signed-in crew unless it is already running or the
+// crew turned it off this session. Resolves to { on, reason } like
+// startCrewTracking, with reason "turned_off" for the crew's own choice.
+export async function autoStartCrewTracking(crewId) {
+  if (await isCrewTrackingActive()) {
+    // Running from before (it survives app restarts); make sure the task
+    // reports for the crew that is signed in now.
+    currentCrewId = crewId;
+    await AsyncStorage.setItem(CREW_ID_KEY, crewId).catch(() => {});
+    return { on: true };
+  }
+  if ((await AsyncStorage.getItem(PAUSED_BY_CREW_KEY).catch(() => null)) === "1") return { on: false, reason: "turned_off" };
+  return startCrewTracking(crewId);
 }

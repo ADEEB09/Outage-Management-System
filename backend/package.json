@@ -11,7 +11,9 @@
     "test": "node src/selftest.js",
     "tiles:fetch": "node scripts/fetch-tiles.mjs",
     "map:test-server": "node map-test-server/server.mjs",
-    "keycloak:mobile": "node scripts/setup-mobile-keycloak.mjs"
+    "keycloak:mobile": "node scripts/setup-mobile-keycloak.mjs",
+    "roads:build": "node scripts/build-road-graph.mjs",
+    "photos:export": "node scripts/export-photos.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -33,5 +35,8 @@
   },
   "engines": {
     "node": ">=22.5.0"
+  },
+  "devDependencies": {
+    "osm-pbf-parser": "^2.3.0"
   }
 }

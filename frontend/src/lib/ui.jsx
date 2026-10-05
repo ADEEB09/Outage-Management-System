@@ -64,12 +64,12 @@ export function useConnection() {
 let pushExternal = () => {};
 export function useToasts() {
   const [items, setItems] = useState([]);
-  const push = useCallback((msg, kind = 'ok') => {
+  const push = useCallback((msg, kind = 'ok', ms = 3200) => {
     const id = Math.random();
     setItems((x) => [...x, { id, msg, kind }]);
-    setTimeout(() => setItems((x) => x.filter((i) => i.id !== id)), 3200);
+    setTimeout(() => setItems((x) => x.filter((i) => i.id !== id)), ms);
   }, []);
   useEffect(() => { pushExternal = push; }, [push]);
   return { items, push };
 }
-export const toast = (msg, kind) => pushExternal(msg, kind);
+export const toast = (msg, kind, ms) => pushExternal(msg, kind, ms);

@@ -9,7 +9,7 @@ import { ensureMapPage } from '../lib/offlineMap/mapPage';
 import { mapRoot } from '../lib/offlineMap/tileStore';
 import { usingMapTestServer } from '../lib/mapServer';
 
-const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, onSelectJob, onUserGesture, style }, ref) {
+const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onSelectJob, onUserGesture, onRouteProgress, style }, ref) {
   const webRef = useRef(null);
   const [pageUri, setPageUri] = useState(null);
   const [pageError, setPageError] = useState(null);
@@ -47,13 +47,14 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, onSelectJo
         : null,
       crew: crew && Number.isFinite(crew.lat) && Number.isFinite(crew.lon) ? crew : null,
       jobs,
+      route: route && Array.isArray(route.coords) ? { coords: route.coords } : null,
     };
     run(`window.OMS && OMS.update(${JSON.stringify(state)});`);
     if (pendingFit.current) {
       run(`window.OMS && OMS.fit(${JSON.stringify(pendingFit.current)});`);
       pendingFit.current = null;
     }
-  }, [ready, pack, crew, jobs, run]);
+  }, [ready, pack, crew, jobs, route, run]);
 
   const onMessage = useCallback((event) => {
     let msg;
@@ -65,8 +66,10 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, onSelectJo
     if (msg?.type === 'ready') setReady(true);
     else if (msg?.type === 'select' && typeof msg.id === 'string') onSelectJob?.(msg.id);
     else if (msg?.type === 'gesture') onUserGesture?.();
+    // Metres left along the road route from where the arrow is drawn (null = off route / no route).
+    else if (msg?.type === 'progress') onRouteProgress?.(Number.isFinite(msg.remaining) ? msg.remaining : null);
     else if (msg?.type === 'error' || msg?.type === 'tileerror') console.warn('[OfflineMap]', msg.type, String(msg.message || ''));
-  }, [onSelectJob, onUserGesture]);
+  }, [onSelectJob, onUserGesture, onRouteProgress]);
 
   if (Platform.OS === 'web') {
     return (

@@ -26,6 +26,9 @@ backend:
     targetCPUUtilizationPercentage: 70   # scale up once average CPU crosses this
   env:
     nodeEnv: production
+    # Fake crew GPS, alarms and trouble calls for demos. Keep "off" wherever
+    # real crews or a real SCADA feed are connected.
+    simulator: "off"
 
 frontend:
   image:

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, Component } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { socket } from './lib/api.js';
-import { Icon, useConnection, useToasts, hhmm } from './lib/ui.jsx';
+import { Icon, useConnection, useToasts, toast, hhmm } from './lib/ui.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import Incidents from './screens/Incidents.jsx';
 import NetworkMap from './screens/NetworkMap.jsx';
@@ -54,6 +54,7 @@ const TAPE_LABEL = {
   'tcs.call.received': ['TROUBLE CALL', ''],
   'crew.updated': ['CREW', ''],
   'crew.job.updated': ['JOB', 'ok'],
+  'crew.tracking.changed': ['TRACKING', ''],
 };
 
 function LiveTape() {
@@ -68,6 +69,7 @@ function LiveTape() {
       else if (topic === 'tcs.call.received') detail = `${p.customer} . ${p.category}`;
       else if (topic === 'crew.updated') detail = `${p.name} . ${p.status}`;
       else if (topic === 'crew.job.updated') detail = `${p.id} . ${p.status}`;
+      else if (topic === 'crew.tracking.changed') detail = `${p.crewName} . ${p.state === 'on' ? 'tracking on' : 'tracking OFF'}`;
       setEvents((e) => [{ id: Math.random(), label, cls, detail, t: hhmm(new Date().toISOString()) }, ...e].slice(0, 14));
     };
     const hs = topics.map((t) => { const h = mk(t); socket.on(t, h); return [t, h]; });
@@ -96,6 +98,16 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false);
   const up = useConnection();
   const { items } = useToasts();
+  // A crew on duty who can't be tracked is an operational risk: say so on
+  // every screen, and keep it up long enough to be noticed.
+  useEffect(() => {
+    const onTracking = (p) => {
+      if (p.alert) toast(`${p.crewName} (${p.crewId}): location tracking is OFF, ${p.reasonText}`, 'err', 20000);
+      else if (p.state === 'on') toast(`${p.crewName} (${p.crewId}): location tracking is on`);
+    };
+    socket.on('crew.tracking.changed', onTracking);
+    return () => socket.off('crew.tracking.changed', onTracking);
+  }, []);
   const [clock, setClock] = useState('');
   useEffect(() => {
     const t = setInterval(() => setClock(new Date().toTimeString().slice(0, 8)), 1000);

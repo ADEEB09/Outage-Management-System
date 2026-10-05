@@ -248,22 +248,27 @@ export const repo = {
   },
   auditLog: () => db.any('SELECT * FROM audit_log ORDER BY ts DESC LIMIT 50'),
 
-  addJobPhoto: async (jobId, dataUrl, lat, lon, note, technicianId, metadata) => {
+  // `image` is the already-compressed photo ({ buffer, contentType, width, height });
+  // the returned row is metadata only, without the image bytes.
+  addJobPhoto: async (jobId, { image, originalContentType, originalBytes }, lat, lon, note, technicianId, metadata) => {
     const ph = {
       id: 'PH' + nanoid(8),
       job_id: jobId,
-      data_url: dataUrl,
+      content_type: image.contentType,
+      original_content_type: originalContentType ?? null,
+      width: image.width,
+      height: image.height,
       lat: lat ?? null,
       lon: lon ?? null,
       note: note ?? null,
       ts: new Date().toISOString(),
       technician_id: technicianId ?? null,
-      metadata: JSON.stringify(metadata ?? {}),
+      metadata: { ...(metadata ?? {}), originalBytes, storedBytes: image.buffer.length },
     };
     await db.none(
-      `INSERT INTO job_photos (id,job_id,data_url,lat,lon,note,ts,technician_id,metadata)
-       VALUES ($/id/,$/job_id/,$/data_url/,$/lat/,$/lon/,$/note/,$/ts/,$/technician_id/,$/metadata/::jsonb)`,
-      ph
+      `INSERT INTO job_photos (id,job_id,image_data,content_type,original_content_type,width,height,lat,lon,note,ts,technician_id,metadata)
+       VALUES ($/id/,$/job_id/,$/image_data/,$/content_type/,$/original_content_type/,$/width/,$/height/,$/lat/,$/lon/,$/note/,$/ts/,$/technician_id/,$/metadata:json/::jsonb)`,
+      { ...ph, image_data: image.buffer }
     );
     return ph;
   },

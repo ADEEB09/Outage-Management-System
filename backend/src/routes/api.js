@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { repo } from '../infra/repo.js';
@@ -9,12 +9,13 @@ import { canTransition, nextStates, LABELS } from '../domain/lifecycle.js';
 import { computeIndices, computeMTTR, computeSLACompliance, computeCrewProductivity, computeOutageFrequency } from '../domain/indices.js';
 import { buildCsv, buildPdf } from '../domain/reports.js';
 import { MAX_LOCATION_BATCH, parseLocationBatch, newestLivePoint, parseTileParams } from '../domain/locations.js';
+import { createRouter } from '../domain/roadRouter.js';
 import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
 import { traceSection } from '../domain/sectionalize.js';
 import { topologyGeoJSON } from '../domain/topology.js';
-import sharp from 'sharp';
+import { decodePhotoDataUrl, compressPhoto } from '../domain/photos.js';
 
 export const api = Router();
 
@@ -589,6 +590,46 @@ api.post('/mobile/crews/:id/locations', async (req, res) => {
   res.json({ ack, inserted, rejected: input.length - valid.length });
 });
 
+// The crew app reports whether continuous tracking is running, so dispatch
+// knows when a crew on duty is not being tracked (and why) instead of just
+// seeing their position go stale. Signing out is off duty, not an alert.
+const TRACKING_OFF_REASONS = {
+  permission_denied: 'location permission was denied',
+  background_permission_denied: 'background location ("Allow all the time") was denied',
+  turned_off: 'the crew turned tracking off',
+  signed_out: 'the crew signed out',
+};
+
+api.post('/mobile/crews/:id/tracking', async (req, res) => {
+  const crewId = req.params.id;
+  if (!ownsCrew(req, crewId)) return res.status(403).json({ error: 'cannot report tracking for another crew' });
+  const { state, reason } = req.body || {};
+  if (state !== 'on' && state !== 'off') return res.status(400).json({ error: 'state must be "on" or "off"' });
+  if (state === 'off' && !TRACKING_OFF_REASONS[reason]) {
+    return res.status(400).json({ error: `reason must be one of: ${Object.keys(TRACKING_OFF_REASONS).join(', ')}` });
+  }
+  const crew = await repo.crew(crewId);
+  if (!crew) return res.status(404).json({ error: 'not found' });
+
+  const trackingReason = state === 'off' ? reason : null;
+  // The app re-reports on every start; only a real change notifies dispatch.
+  if (crew.tracking_state === state && crew.tracking_reason === trackingReason) return res.json({ changed: false });
+
+  const ts = new Date().toISOString();
+  const updated = await repo.updateCrew(crewId, { tracking_state: state, tracking_reason: trackingReason, tracking_changed_at: ts });
+  bus.publish(TOPICS.CREW_TRACKING_CHANGED, {
+    crewId,
+    crewName: crew.name,
+    state,
+    reason: trackingReason,
+    reasonText: trackingReason ? TRACKING_OFF_REASONS[trackingReason] : null,
+    alert: state === 'off' && trackingReason !== 'signed_out',
+    ts,
+  });
+  bus.publish(TOPICS.CREW_UPDATED, updated);
+  res.json({ changed: true });
+});
+
 // Breadcrumb trail for dispatch, e.g. /mobile/crews/C003/track?from=...&to=...
 api.get('/mobile/crews/:id/track', async (req, res) => {
   const to = req.query.to ? new Date(req.query.to) : new Date();
@@ -611,10 +652,52 @@ api.get('/tiles/manifest', (req, res) => {
   });
 });
 
-api.get('/tiles/:z/:x/:y.png', (req, res) => {
+// Road graph for offline routing on the phone (scripts/build-road-graph.mjs).
+api.get('/tiles/roads.json', (req, res) => {
+  res.sendFile('roads.json', { root: TILES_DIR, maxAge: '1d' }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'road graph has not been generated on the server' });
+  });
+});
+
+// Road route between two points, e.g. /route?from=30.3243,78.0418&to=30.3476,78.0808
+// Same graph and code the phone uses offline, so both give the same route.
+// Reloads the graph when roads.json is regenerated.
+let roadRouter = null;
+let roadRouterMtime = 0;
+function getRoadRouter() {
+  const file = join(TILES_DIR, 'roads.json');
+  let mtime;
+  try {
+    mtime = statSync(file).mtimeMs;
+  } catch {
+    return null;
+  }
+  if (!roadRouter || mtime !== roadRouterMtime) {
+    roadRouter = createRouter(JSON.parse(readFileSync(file, 'utf8')));
+    roadRouterMtime = mtime;
+  }
+  return roadRouter;
+}
+const parsePoint = (value) => {
+  const [lat, lon] = String(value ?? '').split(',').map(Number);
+  return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+};
+
+api.get('/route', (req, res) => {
+  const from = parsePoint(req.query.from);
+  const to = parsePoint(req.query.to);
+  if (!from || !to) return res.status(400).json({ error: 'from and to must be "lat,lon"' });
+  const router = getRoadRouter();
+  if (!router) return res.status(503).json({ error: 'road graph has not been generated on the server' });
+  const route = router.route(from, to);
+  if (!route) return res.status(404).json({ error: 'no road route between these points (outside the mapped area?)' });
+  res.json({ ...route, source: 'server' });
+});
+
+api.get('/tiles/:z/:x/:y.:ext(png|webp)', (req, res) => {
   const tile = parseTileParams(req.params);
   if (!tile) return res.status(400).json({ error: 'invalid tile' });
-  res.sendFile(`${tile.z}/${tile.x}/${tile.y}.png`, { root: TILES_DIR, maxAge: '1d', dotfiles: 'deny' }, (err) => {
+  res.sendFile(`${tile.z}/${tile.x}/${tile.y}.${req.params.ext}`, { root: TILES_DIR, maxAge: '1d', dotfiles: 'deny' }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
   });
 });
@@ -663,12 +746,6 @@ api.get('/mobile/jobs/:id/assets/scans', async (req, res) => {
   res.json(await repo.assetScansForJob(job.id));
 });
 
-function decodePhotoDataUrl(dataUrl) {
-  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || '');
-  if (!match) throw new Error('Expected a JPEG, PNG, or WebP data URL');
-  return { contentType: match[1], buffer: Buffer.from(match[2], 'base64') };
-}
-
 // Compress every incoming photo before PostgreSQL storage.
 api.post('/mobile/jobs/:id/photos', async (req, res) => {
   const job = await repo.job(req.params.id);
@@ -677,9 +754,17 @@ api.post('/mobile/jobs/:id/photos', async (req, res) => {
   if (!dataUrl || typeof dataUrl !== 'string') {
     return res.status(400).json({ error: 'dataUrl required' });
   }
-  const photo = await repo.addJobPhoto(req.params.id, dataUrl, lat, lon, note, technicianId, metadata);
-  const { data_url, ...meta } = photo;
-  res.status(201).json(meta);
+  let original, image;
+  try {
+    original = decodePhotoDataUrl(dataUrl);
+    image = await compressPhoto(original.buffer);
+  } catch (e) {
+    return res.status(400).json({ error: `invalid image: ${e.message}` });
+  }
+  const photo = await repo.addJobPhoto(req.params.id, {
+    image, originalContentType: original.contentType, originalBytes: original.buffer.length,
+  }, lat, lon, note, technicianId, metadata);
+  res.status(201).json(photo);
 });
 
 // List photo metadata for a job
@@ -691,7 +776,10 @@ api.get('/mobile/jobs/:id/photos', async (req, res) => {
 api.get('/mobile/photos/:photoId', async (req, res) => {
   const row = await repo.jobPhotoById(req.params.photoId);
   if (!row) return res.status(404).json({ error: 'not found' });
-  res.json(row);
+  const { image_data, ...photo } = row;
+  // Compressed rows keep only the bytes; rebuild the data URL the dashboard expects.
+  if (image_data) photo.data_url = `data:${row.content_type};base64,${image_data.toString('base64')}`;
+  res.json(photo);
 });
 
 api.patch('/mobile/jobs/:id/status', async (req, res) => {
