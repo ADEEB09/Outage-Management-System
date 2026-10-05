@@ -1,20 +1,17 @@
 // src/lib/api.js
 //
 // The SINGLE file that talks to the backend. The UI (App.jsx / NativeApp.jsx
-// and their screens) should never call fetch() directly â€” only these
+// and their screens) should never call fetch() directly — only these
 // functions. That keeps the backend swappable without touching any screen.
 //
 // This file works for BOTH builds:
 //   - Web (Vite):        relative "/api/..." calls, cookie session (credentials: include)
-//   - Native (Expo/RN):  absolute API_BASE calls, Keycloak bearer token
+//   - Native (Expo/RN):  absolute calls to the configured server (lib/server.js), Keycloak bearer token
 // `Platform.OS` (via react-native-web on the web build) tells us which mode
 // we're in, so screens can share the exact same function signatures.
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { API_BASE, PHOTO_API_BASE } from "../config";
-console.log("DEBUG_API_BASE", API_BASE, "DEBUG_PHOTO_BASE", PHOTO_API_BASE);
-console.log("ðŸ” DEBUG â€” API_BASE is:", API_BASE);
-console.log("ðŸ” DEBUG â€” PHOTO_API_BASE is:", PHOTO_API_BASE);
+import { apiBase, loadServer } from "./server";
 const IS_WEB = Platform.OS === "web";
 const WEB_API_URL = "/api";
 const JOBS_CACHE_KEY = "oms-jobs-cache";
@@ -31,7 +28,7 @@ async function cacheJobs(jobs) {
     await AsyncStorage.setItem(JOBS_CACHE_KEY, JSON.stringify(jobs));
     await AsyncStorage.setItem(JOBS_CACHE_SYNCED_AT_KEY, String(Date.now()));
   } catch {
-    // best-effort â€” a caching failure shouldn't block the fetch result
+    // best-effort — a caching failure shouldn't block the fetch result
   }
 }
 
@@ -66,16 +63,16 @@ const DEMO_CREW = {
   name: "Crew Gamma-2",
   lead: "Priya Singh",
   role: "Field Technician",
-  shift: "06:00â€“18:00",
+  shift: "06:00–18:00",
   skills: ["HV", "Transformer"],
 };
 
 let demoJobs = [
-  { id: "JOB-1005", title: "Pending Line Inspection", address: "Mussoorie Road, Dehradun", feeder: "FDR-17", severity: "High", priority: "Urgent", customers: 386, status: "Pending Acceptance", distance: "1.6 km", eta: "6 min", assignedCrewId: "C003", assignedDistance: "1.6 km" },
-  { id: "JOB-1001", title: "Transformer Failure", address: "Rajpur Road, Dehradun", feeder: "FDR-12", severity: "Critical", priority: "Urgent", customers: 842, status: "Acknowledged", distance: "2.4 km", eta: "7 min" },
-  { id: "JOB-1002", title: "Line Fault", address: "Haridwar Road, Rishikesh", feeder: "FDR-08", severity: "High", priority: "Urgent", customers: 531, status: "En Route", distance: "5.8 km", eta: "14 min" },
-  { id: "JOB-1003", title: "Fuse Failure", address: "Clock Tower, Dehradun", feeder: "FDR-03", severity: "Medium", priority: "Normal", customers: 214, status: "On Site", distance: "8.2 km", eta: "21 min" },
-  { id: "JOB-1004", title: "Cable Fault", address: "Prem Nagar, Dehradun", feeder: "FDR-21", severity: "Low", priority: "Planned", customers: 93, status: "Work Started", distance: "11.4 km", eta: "28 min" },
+  { id: "JOB-1005", title: "Pending Line Inspection", address: "Mussoorie Road, Dehradun", feeder: "FDR-17", severity: "High", priority: "Urgent", customers: 386, status: "Pending Acceptance", distance: "1.6 km", eta: "6 min", assignedCrewId: "C003", assignedDistance: "1.6 km", coordinates: { lat: 30.3606, lon: 78.0647 } },
+  { id: "JOB-1001", title: "Transformer Failure", address: "Rajpur Road, Dehradun", feeder: "FDR-12", severity: "Critical", priority: "Urgent", customers: 842, status: "Acknowledged", distance: "2.4 km", eta: "7 min", coordinates: { lat: 30.3476, lon: 78.0808 } },
+  { id: "JOB-1002", title: "Line Fault", address: "Haridwar Road, Rishikesh", feeder: "FDR-08", severity: "High", priority: "Urgent", customers: 531, status: "En Route", distance: "5.8 km", eta: "14 min", coordinates: { lat: 30.0869, lon: 78.2676 } },
+  { id: "JOB-1003", title: "Fuse Failure", address: "Clock Tower, Dehradun", feeder: "FDR-03", severity: "Medium", priority: "Normal", customers: 214, status: "On Site", distance: "8.2 km", eta: "21 min", coordinates: { lat: 30.3243, lon: 78.0418 } },
+  { id: "JOB-1004", title: "Cable Fault", address: "Prem Nagar, Dehradun", feeder: "FDR-21", severity: "Low", priority: "Planned", customers: 93, status: "Work Started", distance: "11.4 km", eta: "28 min", coordinates: { lat: 30.335, lon: 77.961 } },
 ];
 
 /* =========================================================
@@ -97,21 +94,11 @@ async function webReq(path, method = "GET", body) {
 // Native: absolute backend URL, Keycloak bearer token (per the OMS mobile guide).
 async function nativeReq(path, method = "GET", body) {
   const { authHeader } = await nativeAuth();
-  const response = await fetch(API_BASE + path, {
+  await loadServer();
+  const response = await fetch(apiBase() + path, {
     method,
     headers: { "Content-Type": "application/json", ...authHeader() },
     body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
-async function photoReq(path, body) {
-  const { authHeader } = await nativeAuth();
-  const response = await fetch(PHOTO_API_BASE + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeader() },
-    body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
@@ -124,13 +111,13 @@ function normalizeOmsJob(job) {
     id: job.id ?? job.jobId,
     title: job.title ?? job.incident?.type ?? "Priority outage",
     address: job.address ?? job.incident?.zone ?? job.location ?? "Location unavailable",
-    feeder: job.feeder ?? job.incident?.feeder ?? job.feederId ?? "â€”",
+    feeder: job.feeder ?? job.incident?.feeder ?? job.feederId ?? "—",
     severity: job.severity ?? job.incident?.severity ?? "Medium",
     priority: job.priority ?? "Urgent",
     customers: job.customers ?? job.incident?.customers ?? job.affectedCustomers ?? 0,
     status: job.status ?? "Pending Acceptance",
-    distance: job.distance ?? (job.distanceKm ? `${job.distanceKm} km` : "â€”"),
-    eta: job.eta ?? "â€”",
+    distance: job.distance ?? (job.distanceKm ? `${job.distanceKm} km` : "—"),
+    eta: job.eta ?? "—",
     assignedCrewId: job.assignedCrewId ?? job.crewId ?? null,
     assignedDistance: job.assignedDistance ?? job.distance ?? "Nearest available",
     incidentId: job.incident_id ?? job.incidentId ?? null,
@@ -139,20 +126,23 @@ function normalizeOmsJob(job) {
 }
 
 /* =========================================================
-   PUBLIC API â€” same function names/shapes on web and native
+   PUBLIC API — same function names/shapes on web and native
 ========================================================= */
 
 // GET current crew record.
 // Web:    GET /api/me                         (cookie session)
 // Native: GET /api/mobile/crews/:crewId        (Keycloak bearer token)
 export async function getCurrentCrew() {
+  if (IS_WEB) return webReq("/me").catch(() => DEMO_CREW);
+  const { isAuthenticated, myCrewId, currentUsername } = await nativeAuth();
+  if (!isAuthenticated()) return DEMO_CREW;
   try {
-    if (IS_WEB) return await webReq("/me");
-    const { isAuthenticated, myCrewId } = await nativeAuth();
-    if (!isAuthenticated()) return DEMO_CREW;
     return await nativeReq("/mobile/crews/" + myCrewId());
   } catch {
-    return DEMO_CREW;
+    // Signed in but the backend is unreachable: keep the real identity
+    // (so tracking and uploads still go to the right crew) rather than
+    // passing the demo crew off as the tester's own.
+    return { ...DEMO_CREW, id: myCrewId(), name: currentUsername() || myCrewId(), lead: "", skills: [] };
   }
 }
 
@@ -175,11 +165,14 @@ export async function getMyJobs() {
     await cacheJobs(mapped);
     return mapped;
   } catch {
-    // No connectivity / backend unreachable â€” prefer the last real
-    // synced job list (offline-ready data) over the static demo set,
-    // so the crew still sees their actual last-known assignments.
+    // No connectivity / backend unreachable — show the last real synced
+    // job list (offline-ready data) so the crew still sees their actual
+    // last-known assignments. A signed-in crew never gets the demo set:
+    // sample jobs would look like real work and hide the outage.
     const cached = await readCachedJobs();
-    return cached && cached.length ? cached : demoJobs;
+    if (cached && cached.length) return cached;
+    const signedIn = !IS_WEB && (await nativeAuth()).isAuthenticated();
+    return signedIn ? [] : demoJobs;
   }
 }
 
@@ -207,7 +200,7 @@ export async function updateJobStatus(id, status, location = {}, job) {
   });
 }
 
-// POST a photo for a job (native only â€” the web app uses local object URLs).
+// POST a photo for a job (native only — the web app uses local object URLs).
 // Native: POST /api/mobile/jobs/:id/photos  { dataUrl, lat, lon, note }
 export async function uploadJobPhoto(id, dataUrl, location = {}, note, metadata = {}) {
   if (IS_WEB) {
@@ -219,7 +212,7 @@ export async function uploadJobPhoto(id, dataUrl, location = {}, note, metadata 
       ...metadata,
     });
   }
-  return photoReq(`/mobile/jobs/${id}/photos`, {
+  return nativeReq(`/mobile/jobs/${id}/photos`, "POST", {
     dataUrl,
     lat: location.lat ?? null,
     lon: location.lon ?? null,
@@ -260,4 +253,6 @@ export async function logout() {
   }
   const { logout: authLogout } = await import("./auth");
   await authLogout();
+  // The cached job list belongs to the crew that just signed out.
+  await AsyncStorage.multiRemove([JOBS_CACHE_KEY, JOBS_CACHE_SYNCED_AT_KEY]).catch(() => {});
 }

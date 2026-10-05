@@ -1,0 +1,44 @@
+# Self-hosted OpenStreetMap raster tile renderer, used ONLY to generate the
+# crew app's offline map pack (backend/tiles) from free OSM data. Phones
+# never talk to it — they download the finished pack from the OMS backend.
+#
+# One-time setup (from this folder):
+#   1. Get the free Uttarakhand OSM extract (~35 MB), refresh it whenever you
+#      want newer map data:
+#        curl -L -o uttarakhand.osm.pbf https://download.openstreetmap.fr/extracts/asia/india/uttarakhand-latest.osm.pbf
+#   2. Import it into the renderer's database (~10–30 min, first time only):
+#        docker compose run --rm import
+#   3. Start the renderer:
+#        docker compose up -d tiles
+#   4. Generate the pack (from backend/):
+#        TILE_SOURCE_URL="http://localhost:8090/tile/{z}/{x}/{y}.png" npm run tiles:fetch
+#   5. Stop it again — it's not needed at runtime:
+#        docker compose stop tiles
+#
+# Map data © OpenStreetMap contributors (ODbL); the app shows this credit.
+services:
+  import:
+    image: overv/openstreetmap-tile-server:latest
+    command: import
+    environment:
+      THREADS: 8
+      OSM2PGSQL_EXTRA_ARGS: "-C 3000"
+    volumes:
+      - ./uttarakhand.osm.pbf:/data/region.osm.pbf:ro
+      - osm-data:/data/database/
+    profiles: ["import"]
+
+  tiles:
+    image: overv/openstreetmap-tile-server:latest
+    command: run
+    environment:
+      THREADS: 8
+    ports:
+      - "127.0.0.1:8090:80" # localhost only; 8080 is taken by Keycloak
+    volumes:
+      - osm-data:/data/database/
+    shm_size: 256m
+
+volumes:
+  osm-data:
+    name: osm-data

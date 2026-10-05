@@ -41,10 +41,18 @@ const CHECKLIST_ITEMS = {
   ],
 };
 
-export default function PriorityChecklist({ severity = "Medium" }) {
+export default function PriorityChecklist({ severity = "Medium", onChange }) {
   const color = SEVERITY_COLORS[severity] || SEVERITY_COLORS.Medium;
   const items = CHECKLIST_ITEMS[severity] || CHECKLIST_ITEMS.Medium;
   const [checked, setChecked] = useState({});
+
+  const toggle = (i) => {
+    setChecked((prev) => {
+      const next = { ...prev, [i]: !prev[i] };
+      onChange?.(items.every((_, idx) => next[idx]));
+      return next;
+    });
+  };
 
   return (
     <View style={[s.card, { borderColor: color }]}>
@@ -54,11 +62,14 @@ export default function PriorityChecklist({ severity = "Medium" }) {
           <Text style={s.badgeText}>{severity?.toUpperCase()}</Text>
         </View>
       </View>
+      <Text style={s.hint}>Complete every item before you can proceed with this job.</Text>
       {items.map((item, i) => (
         <Pressable
           key={i}
           style={s.row}
-          onPress={() => setChecked((prev) => ({ ...prev, [i]: !prev[i] }))}
+          onPress={() => toggle(i)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: !!checked[i] }}
         >
           <View style={[s.box, { borderColor: color }, checked[i] && { backgroundColor: color }]}>
             {checked[i] && <Text style={s.tick}>✓</Text>}
@@ -80,6 +91,7 @@ const s = StyleSheet.create({
   },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   title: { fontSize: 15, fontWeight: "700", color: "#0f1b2d" },
+  hint: { fontSize: 11, color: "#7c8da3" },
   badge: { borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4 },
   badgeText: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   row: { flexDirection: "row", alignItems: "center", gap: 10 },

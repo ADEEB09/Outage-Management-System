@@ -4,7 +4,8 @@
 import { Platform } from "react-native";
 import * as AuthSession from "expo-auth-session";
 import * as SecureStore from "expo-secure-store";
-import { KEYCLOAK_URL, REALM, CLIENT_ID, REDIRECT_SCHEME } from "../config";
+import { REALM, CLIENT_ID, REDIRECT_SCHEME } from "../config";
+import { keycloakUrl, loadServer } from "./server";
 import { encryptString, decryptString } from "./webCrypto";
 
 // Encrypted, persistent token storage on both platforms:
@@ -55,13 +56,19 @@ const SafeStore = {
   },
 };
 
-export const discovery = {
-  authorizationEndpoint: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/auth`,
-  tokenEndpoint: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token`,
-  endSessionEndpoint: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/logout`,
-};
+// Keycloak endpoints for the currently configured server (lib/server.js).
+export function getDiscovery() {
+  const base = `${keycloakUrl()}/realms/${REALM}/protocol/openid-connect`;
+  return {
+    authorizationEndpoint: `${base}/auth`,
+    tokenEndpoint: `${base}/token`,
+    endSessionEndpoint: `${base}/logout`,
+  };
+}
 
-export const redirectUri = AuthSession.makeRedirectUri({ scheme: REDIRECT_SCHEME });
+// A path is required: Keycloak rejects "omscrew://" (empty host) as an
+// invalid redirect URI. "omscrew://auth" matches the client's omscrew://* rule.
+export const redirectUri = AuthSession.makeRedirectUri({ scheme: REDIRECT_SCHEME, path: "auth" });
 
 let accessToken = null;
 let refreshToken = null;
@@ -88,12 +95,62 @@ async function exchangeCode(code, codeVerifier) {
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
   });
-  const response = await fetch(discovery.tokenEndpoint, {
+  const response = await fetch(getDiscovery().tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
   return response.json();
+}
+
+let refreshTimer = null;
+
+// Keycloak access tokens are short-lived (typically ~5 min). Without this,
+// a session left open for more than a few minutes — exactly what happens
+// during a real device test — starts failing every API call and every
+// background location ping with 401, silently, since both just log/queue
+// the failure instead of surfacing it.
+function scheduleTokenRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  if (!tokenParsed?.exp || !refreshToken) return;
+  const msUntilExpiry = tokenParsed.exp * 1000 - Date.now();
+  const delay = Math.max(msUntilExpiry - 60000, 5000); // refresh 60s before expiry
+  refreshTimer = setTimeout(() => {
+    refreshAccessToken().catch(() => {});
+  }, delay);
+}
+
+export async function refreshAccessToken() {
+  if (!refreshToken) return false;
+  try {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: CLIENT_ID,
+      refresh_token: refreshToken,
+    });
+    const response = await fetch(getDiscovery().tokenEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+    const data = await response.json();
+    if (!data.access_token) throw new Error("refresh failed");
+
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token ?? refreshToken;
+    tokenParsed = parseJwt(accessToken);
+
+    await SafeStore.setItemAsync("oms_token", accessToken);
+    if (data.refresh_token) await SafeStore.setItemAsync("oms_refresh_token", refreshToken);
+
+    scheduleTokenRefresh();
+    return true;
+  } catch {
+    // Refresh token itself expired/revoked — the crew will need to sign in
+    // again; don't clear the session here so an in-flight request can still
+    // try with the stale token rather than being force-logged-out mid-task.
+    return false;
+  }
 }
 
 // Call from a login screen with the `promptAsync`/`request` pair returned by
@@ -114,6 +171,7 @@ export async function login(promptAsync, request) {
 
   await SafeStore.setItemAsync("oms_token", accessToken);
   if (refreshToken) await SafeStore.setItemAsync("oms_refresh_token", refreshToken);
+  scheduleTokenRefresh();
   return { success: true };
 }
 
@@ -122,6 +180,7 @@ export async function login(promptAsync, request) {
 // (e.g. a startup spinner) can't hang waiting on this.
 export async function restoreSession() {
   try {
+    await loadServer();
     const stored = await SafeStore.getItemAsync("oms_token");
     if (!stored) return false;
     const parsed = parseJwt(stored);
@@ -133,6 +192,7 @@ export async function restoreSession() {
     accessToken = stored;
     tokenParsed = parsed;
     refreshToken = (await SafeStore.getItemAsync("oms_refresh_token")) ?? null;
+    scheduleTokenRefresh();
     return true;
   } catch {
     return false;
@@ -141,6 +201,52 @@ export async function restoreSession() {
 
 export function authHeader() {
   return accessToken ? { Authorization: "Bearer " + accessToken } : {};
+}
+
+// Standalone token fetch for code that may run in a headless JS context
+// with no in-memory auth state — Android can wake the background location
+// task in a fresh JS instance after the app process was killed, where the
+// `accessToken`/`refreshToken` module variables above are simply unset.
+// Reads straight from SecureStore, refreshing first if the stored token is
+// expired or about to be, and persists any refreshed pair back to storage.
+export async function getFreshAccessToken() {
+  try {
+    await loadServer(); // may be a fresh headless JS instance
+    const stored = await SafeStore.getItemAsync("oms_token");
+    if (!stored) return null;
+    const parsed = parseJwt(stored);
+    const expiresAtMs = (parsed?.exp ?? 0) * 1000;
+    if (expiresAtMs && expiresAtMs - Date.now() > 30000) return stored;
+
+    const storedRefresh = await SafeStore.getItemAsync("oms_refresh_token");
+    if (!storedRefresh) return expiresAtMs > Date.now() ? stored : null;
+
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: CLIENT_ID,
+      refresh_token: storedRefresh,
+    });
+    const response = await fetch(getDiscovery().tokenEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+    const data = await response.json();
+    if (!data.access_token) return expiresAtMs > Date.now() ? stored : null;
+
+    await SafeStore.setItemAsync("oms_token", data.access_token);
+    if (data.refresh_token) await SafeStore.setItemAsync("oms_refresh_token", data.refresh_token);
+
+    // Keep the in-memory singleton in sync too, in case this ran in the
+    // same JS instance as the live app (the common case).
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token ?? refreshToken;
+    tokenParsed = parseJwt(accessToken);
+
+    return data.access_token;
+  } catch {
+    return null;
+  }
 }
 
 export function isAuthenticated() {
@@ -161,6 +267,8 @@ export function currentUsername() {
 }
 
 export async function logout() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
   accessToken = null;
   refreshToken = null;
   tokenParsed = null;

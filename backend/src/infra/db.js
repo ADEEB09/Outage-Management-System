@@ -112,20 +112,6 @@ export async function migrate() {
 
     CREATE INDEX IF NOT EXISTS asset_scans_job_id_idx ON asset_scans(job_id);
 
-    -- crew.mobile background-location tracking: a ping every ~30s/50m while
-    -- a crew member has tracking enabled on duty (src/lib/backgroundLocation.js
-    -- in mobile-native-fixed). No FK to crews(id) since a ping can arrive for
-    -- a crew_id the demo data doesn't recognize.
-    CREATE TABLE IF NOT EXISTS crew_locations (
-      id          BIGSERIAL PRIMARY KEY,
-      crew_id     TEXT NOT NULL,
-      lat         DOUBLE PRECISION NOT NULL,
-      lon         DOUBLE PRECISION NOT NULL,
-      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS crew_locations_crew_id_idx ON crew_locations(crew_id, recorded_at DESC);
-
     CREATE TABLE IF NOT EXISTS job_updates (
       id     TEXT PRIMARY KEY,
       job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -203,6 +189,48 @@ export async function migrate() {
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS technician_id TEXT;
     ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
     ALTER TABLE job_photos ALTER COLUMN data_url DROP NOT NULL;
+  `);
+
+  // Crew GPS breadcrumb trail. Points are recorded on the phone (possibly
+  // while offline) and uploaded later in batches, so each row carries the
+  // device-side recorded_at plus a client-generated id that makes retried
+  // uploads idempotent. crews.location_updated_at guards the live position
+  // against being overwritten by an older, late-arriving backfill batch.
+  // No FK to crews(id): a ping can arrive for a crew_id the demo data
+  // doesn't recognize.
+  await db.none(`
+    CREATE TABLE IF NOT EXISTS crew_locations (
+      id           TEXT PRIMARY KEY,
+      crew_id      TEXT NOT NULL,
+      lat          DOUBLE PRECISION NOT NULL,
+      lon          DOUBLE PRECISION NOT NULL,
+      accuracy     REAL,
+      speed        REAL,
+      heading      REAL,
+      recorded_at  TIMESTAMPTZ NOT NULL,
+      received_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS crew_locations_crew_time_idx ON crew_locations(crew_id, recorded_at DESC);
+    ALTER TABLE crews ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
+
+    -- Upgrade the earlier single-ping table (BIGSERIAL id, no accuracy/speed/
+    -- heading) in place, keeping its rows. The id default keeps plain
+    -- INSERTs without an id (repo.addCrewLocation) working.
+    ALTER TABLE crew_locations ADD COLUMN IF NOT EXISTS accuracy REAL;
+    ALTER TABLE crew_locations ADD COLUMN IF NOT EXISTS speed REAL;
+    ALTER TABLE crew_locations ADD COLUMN IF NOT EXISTS heading REAL;
+    ALTER TABLE crew_locations ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    DO $$
+    BEGIN
+      IF (SELECT data_type FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'crew_locations' AND column_name = 'id') = 'bigint' THEN
+        ALTER TABLE crew_locations ALTER COLUMN id DROP DEFAULT;
+        ALTER TABLE crew_locations ALTER COLUMN id TYPE TEXT USING id::text;
+        DROP SEQUENCE IF EXISTS crew_locations_id_seq;
+      END IF;
+    END $$;
+    ALTER TABLE crew_locations ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+    DROP INDEX IF EXISTS crew_locations_crew_id_idx; -- duplicate of crew_locations_crew_time_idx
   `);
 
   // ID sequences for incidents.id / complaints.qid. These replace the old

@@ -35,6 +35,7 @@ export function requireAuth(req, res, next) {
     req.user = {
       username: decoded.preferred_username,
       roles: (decoded.realm_access && decoded.realm_access.roles) || [],
+      crewId: decoded.crew_id || null,
     };
     next();
   });

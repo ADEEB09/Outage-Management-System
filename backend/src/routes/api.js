@@ -8,6 +8,7 @@ import { bus, TOPICS } from '../domain/bus.js';
 import { canTransition, nextStates, LABELS } from '../domain/lifecycle.js';
 import { computeIndices, computeMTTR, computeSLACompliance, computeCrewProductivity, computeOutageFrequency } from '../domain/indices.js';
 import { buildCsv, buildPdf } from '../domain/reports.js';
+import { MAX_LOCATION_BATCH, parseLocationBatch, newestLivePoint, parseTileParams } from '../domain/locations.js';
 import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
@@ -538,6 +539,86 @@ api.get('/mobile/crews/:id', async (req, res) => {
   res.json(crew);
 });
 
+// Continuous background location ping from the crew's phone. Persists the
+// crew's live lat/lon (the crews.geog column auto-updates via DB trigger,
+// which is what nearestAvailableCrews() and the dispatch map already read).
+api.post('/mobile/crews/:id/location', async (req, res) => {
+  // Coerce: the older mobile-native-fixed app may send numeric strings.
+  const lat = Number(req.body?.lat);
+  const lon = Number(req.body?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: 'lat/lon required' });
+  }
+  const crew = await repo.crew(req.params.id);
+  if (!crew) return res.status(404).json({ error: 'not found' });
+  const updated = await repo.updateCrew(req.params.id, { lat, lon, location_updated_at: new Date().toISOString() });
+  bus.publish(TOPICS.CREW_UPDATED, updated);
+  res.json({ ok: true, crew: updated });
+});
+
+// Batched, offline-tolerant location upload. The phone records every GPS
+// fix into a local queue (even with no network) and flushes it here in
+// chunks once connectivity returns. Each point carries a client-generated
+// id, so a retried batch is idempotent. The response acks every id the
+// server is done with (stored, duplicate, or rejected as invalid) so the
+// client can delete exactly those and never retries garbage forever.
+// Validation rules live in domain/locations.js (shared with the map test server).
+
+// A crew token may only report its own position. Tokens without a crew_id
+// claim (demo accounts mapped by username) fall back to the route id.
+const ownsCrew = (req, crewId) => !req.user?.crewId || req.user.crewId === crewId;
+
+api.post('/mobile/crews/:id/locations', async (req, res) => {
+  const crewId = req.params.id;
+  if (!ownsCrew(req, crewId)) return res.status(403).json({ error: 'cannot report location for another crew' });
+  const input = req.body?.points;
+  if (!Array.isArray(input) || !input.length) return res.status(400).json({ error: 'points[] required' });
+  if (input.length > MAX_LOCATION_BATCH) return res.status(413).json({ error: `max ${MAX_LOCATION_BATCH} points per batch` });
+
+  const crew = await repo.crew(crewId);
+  if (!crew) return res.status(404).json({ error: 'not found' });
+
+  const { valid, ack } = parseLocationBatch(input);
+  const inserted = await repo.addCrewLocations(crewId, valid);
+
+  const newest = newestLivePoint(valid);
+  if (newest && (await repo.updateCrewLivePosition(crewId, newest))) {
+    bus.publish(TOPICS.CREW_UPDATED, await repo.crew(crewId));
+  }
+
+  res.json({ ack, inserted, rejected: input.length - valid.length });
+});
+
+// Breadcrumb trail for dispatch, e.g. /mobile/crews/C003/track?from=...&to=...
+api.get('/mobile/crews/:id/track', async (req, res) => {
+  const to = req.query.to ? new Date(req.query.to) : new Date();
+  const from = req.query.from ? new Date(req.query.from) : new Date(to.getTime() - 12 * 3600 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return res.status(400).json({ error: 'invalid from/to' });
+  res.json(await repo.crewTrack(req.params.id, from.toISOString(), to.toISOString()));
+});
+
+// ---------- offline map tile pack ----------
+// Raster tiles for the crew app's offline map, pre-seeded once on the server
+// by backend/scripts/fetch-tiles.mjs. Served behind the normal auth so this
+// never becomes an open public tile server; phones download the pack from
+// here (not from a third-party tile CDN) and then render fully offline.
+const TILES_DIR = process.env.TILES_DIR || join(_dir, '..', '..', 'tiles');
+
+api.get('/tiles/manifest', (req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile('manifest.json', { root: TILES_DIR }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'offline map pack has not been generated on the server' });
+  });
+});
+
+api.get('/tiles/:z/:x/:y.png', (req, res) => {
+  const tile = parseTileParams(req.params);
+  if (!tile) return res.status(400).json({ error: 'invalid tile' });
+  res.sendFile(`${tile.z}/${tile.x}/${tile.y}.png`, { root: TILES_DIR, maxAge: '1d', dotfiles: 'deny' }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
+});
+
 api.get('/mobile/crews/:id/messages', async (req, res) => {
   const crew = await repo.crew(req.params.id);
   if (!crew) return res.status(404).json({ error: 'not found' });
@@ -548,17 +629,6 @@ api.get('/mobile/jobs/:id/messages', async (req, res) => {
   const job = await repo.job(req.params.id);
   if (!job) return res.status(404).json({ error: 'not found' });
   res.json(job.incident_id ? await repo.messages(job.incident_id) : []);
-});
-
-// Background location ping (src/lib/backgroundLocation.js in mobile-native-fixed,
-// sent every ~30s/50m while a crew member has tracking enabled).
-api.post('/mobile/crews/:id/location', async (req, res) => {
-  const { lat, lon } = req.body || {};
-  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
-    return res.status(400).json({ error: 'latitude and longitude are required' });
-  }
-  const location = await repo.addCrewLocation(req.params.id, Number(lat), Number(lon));
-  res.status(201).json(location);
 });
 
 api.get('/mobile/jobs/:id/history', async (req, res) => res.json(await repo.jobUpdates(req.params.id)));

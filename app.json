@@ -6,6 +6,7 @@
     "scheme": "omscrew",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "com.omscrew.mobile",
       "infoPlist": {
@@ -13,11 +14,19 @@
         "NSLocationWhenInUseUsageDescription": "OMS Crew uses your location to tag job status updates and photos with GPS coordinates.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "OMS Crew shares your location with dispatch while you are on duty, including when the app is in the background.",
         "NSFaceIDUsageDescription": "OMS Crew can use Face ID to quickly unlock the app after sign-in.",
-        "UIBackgroundModes": ["location"]
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "android": {
       "package": "com.omscrew.mobile",
+      "edgeToEdgeEnabled": true,
+      "navigationBarColor": "#ffffff",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#173355"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
@@ -27,7 +36,9 @@
         "android.permission.FOREGROUND_SERVICE_LOCATION",
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.WAKE_LOCK"
       ]
     },
     "web": {
@@ -59,7 +70,8 @@
       ],
       "expo-web-browser",
       "expo-font",
-      "expo-task-manager"
+      "expo-task-manager",
+      "expo-sqlite"
     ],
     "extra": {
       "eas": {
