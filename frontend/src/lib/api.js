@@ -59,6 +59,8 @@ export const api = {
   outageFrequency: () => req('GET', '/analytics/outage-frequency'),
   audit: () => req('GET', '/audit'),
   network: () => req('GET', '/network'),
+  networkTopology: () => req('GET', '/network/topology'),
+  networkSection: (mrid) => req('GET', `/network/section/${encodeURIComponent(mrid)}`),
   
   network: () => req('GET', '/network'),
   complaints: () => req('GET', '/complaints'),
