@@ -6,6 +6,34 @@ const pgp = pgPromise({
 const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:15432/oms';
 export const db = pgp(connectionString);
 
+export async function syncIdSequences() {
+  // Forward-only: GREATEST() never rewinds a sequence onto live IDs, so calling
+  // this again at any point (e.g. after seed()) can only move a counter forward.
+  await db.none(`
+    DO $$
+    DECLARE target bigint;
+    BEGIN
+      SELECT GREATEST(
+        COALESCE((SELECT MAX((substring(id from '[0-9]+$'))::bigint) FROM incidents
+                   WHERE id ~ '^INC-[0-9]{4}-[0-9]+$'), 0),
+        COALESCE((SELECT last_value FROM pg_sequences
+                   WHERE schemaname = 'public' AND sequencename = 'incident_id_seq'), 0)
+      ) INTO target;
+      IF target < 1 THEN PERFORM setval('incident_id_seq', 1, false);
+      ELSE PERFORM setval('incident_id_seq', target, true); END IF;
+
+      SELECT GREATEST(
+        COALESCE((SELECT MAX((substring(qid from '[0-9]+$'))::bigint) FROM complaints
+                   WHERE qid ~ '^QRY-[0-9]{4}-[0-9]+$'), 0),
+        COALESCE((SELECT last_value FROM pg_sequences
+                   WHERE schemaname = 'public' AND sequencename = 'complaint_qid_seq'), 0)
+      ) INTO target;
+      IF target < 1 THEN PERFORM setval('complaint_qid_seq', 1, false);
+      ELSE PERFORM setval('complaint_qid_seq', target, true); END IF;
+    END $$;
+  `);
+}
+
 export async function migrate() {
   await db.none(`
     CREATE TABLE IF NOT EXISTS incidents (
@@ -236,35 +264,19 @@ export async function migrate() {
   // ID sequences for incidents.id / complaints.qid. These replace the old
   // SELECT COUNT(*) minting in repo.js, which raced under concurrency and
   // crashed the process on the resulting duplicate-key error (P8.6).
-  // Mirrors db/migrations/sequence_based_id_generation.sql -- that file is
-  // for already-deployed databases, this is so a fresh one self-bootstraps.
-  // Forward-only: GREATEST() never resets a sequence back onto live IDs.
   await db.none(`
     CREATE SEQUENCE IF NOT EXISTS incident_id_seq   AS bigint MINVALUE 1;
     CREATE SEQUENCE IF NOT EXISTS complaint_qid_seq AS bigint MINVALUE 1;
-
-    DO $$
-    DECLARE target bigint;
-    BEGIN
-      SELECT GREATEST(
-        COALESCE((SELECT MAX((substring(id from '[0-9]+$'))::bigint) FROM incidents
-                   WHERE id ~ '^INC-[0-9]{4}-[0-9]+$'), 0),
-        COALESCE((SELECT last_value FROM pg_sequences
-                   WHERE schemaname = 'public' AND sequencename = 'incident_id_seq'), 0)
-      ) INTO target;
-      IF target < 1 THEN PERFORM setval('incident_id_seq', 1, false);
-      ELSE PERFORM setval('incident_id_seq', target, true); END IF;
-
-      SELECT GREATEST(
-        COALESCE((SELECT MAX((substring(qid from '[0-9]+$'))::bigint) FROM complaints
-                   WHERE qid ~ '^QRY-[0-9]{4}-[0-9]+$'), 0),
-        COALESCE((SELECT last_value FROM pg_sequences
-                   WHERE schemaname = 'public' AND sequencename = 'complaint_qid_seq'), 0)
-      ) INTO target;
-      IF target < 1 THEN PERFORM setval('complaint_qid_seq', 1, false);
-      ELSE PERFORM setval('complaint_qid_seq', target, true); END IF;
-    END $$;
   `);
+  // Setting a sequence's VALUE is separate from creating it, because seed()
+  // inserts its demo rows with hand-written IDs (INC-2026-000001..7) AFTER
+  // migrate() has run. Bootstrapping only here, before those rows exist, left
+  // the counter at 1 on a brand-new database, so the first real incident got an
+  // ID that already existed -> duplicate key -> HTTP 500 (this is what turned
+  // CI red: its database is always brand new). seed() now calls
+  // syncIdSequences() again after its inserts; this call keeps a production
+  // database (no seed step) self-bootstrapping on migrate() alone.
+  await syncIdSequences();
 
   const postgis = await db.oneOrNone(
     "SELECT 1 FROM pg_extension WHERE extname = 'postgis'"

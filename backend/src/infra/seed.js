@@ -1,4 +1,4 @@
-import { db, migrate } from './db.js';
+import { db, migrate, syncIdSequences } from './db.js';
 
 // Seed mirrors the UPCL "Ganga Corridor" reference data from the SRS/screens:
 // Dehradun, Haridwar, Rishikesh — real coordinates, CIM-style feeder IDs, UNS tags.
@@ -110,6 +110,11 @@ export async function seed({ force = false } = {}) {
       VALUES ($/qid/,$/external_id/,$/customer/,$/phone/,$/address/,$/category/,$/lat/,$/lon/,$/dt_id/,$/feeder/,$/substation/,$/incident_id/,$/action/,$/ts/)`,
       { qid: c[0], external_id: c[1], customer: c[2], phone: c[3], address: c[4], category: c[5], lat: c[6], lon: c[7], dt_id: c[8], feeder: c[9], substation: c[10], incident_id: c[11], action: c[12], ts: iso(c[13]) });
   }
+
+  // The demo incidents/complaints above use hand-written IDs, inserted after
+  // migrate() already set the counters (on empty tables). Move the counters past
+  // them now, or the next real incident collides with seed data.
+  await syncIdSequences();
 
   return { seeded: true, incidents: incidents.length, crews: crews.length };
 }
