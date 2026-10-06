@@ -183,6 +183,23 @@ const server = app.listen(4100, async () => {
   master.close();
   await outstation.close();
 
+  // Crew trail: the dashboard draws this. A long window must keep the NEWEST points.
+  {
+    const t0 = Date.now() - 50 * 60 * 1000;
+    const pts = [0, 1, 2, 3, 4].map((k) => ({ id: `selftest-trail-${k}-${t0}`, lat: 30.0 + k * 0.001, lon: 78.0 + k * 0.001, accuracy: 8, recordedAt: t0 + k * 10 * 60 * 1000 }));
+    const up = await j('POST', '/mobile/crews/C006/locations', { points: pts });
+    check('trail: GPS batch stored', up.status === 200 && up.body.inserted === 5, JSON.stringify(up.body));
+    const from = new Date(t0 - 60000).toISOString(), to = new Date().toISOString();
+    const all = await j('GET', `/mobile/crews/C006/track?from=${from}&to=${to}`);
+    check('trail: returns every point oldest -> newest, with received_at',
+      Array.isArray(all.body) && all.body.length === 5 && all.body.every((p, i, a) => !i || new Date(p.recorded_at) >= new Date(a[i - 1].recorded_at)) && all.body.every((p) => p.received_at),
+      all.body.length);
+    const last2 = await j('GET', `/mobile/crews/C006/track?from=${from}&to=${to}&limit=2`);
+    check('trail: ?limit keeps the NEWEST points (still oldest -> newest)',
+      last2.body.length === 2 && Math.abs(last2.body[1].lat - 30.004) < 1e-9 && Math.abs(last2.body[0].lat - 30.003) < 1e-9,
+      JSON.stringify(last2.body.map((p) => p.lat)));
+  }
+
   console.log('\n  OMS backend self-test\n  ' + '-'.repeat(40));
   results.forEach(([s, n, e]) => console.log(`  [${s}] ${n} ${e}`));
   const fails = results.filter(r => r[0] === 'FAIL').length;

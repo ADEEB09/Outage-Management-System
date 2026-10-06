@@ -44,6 +44,8 @@ export const api = {
   postMessage: (id, body) => req('POST', `/incidents/${id}/messages`, { body }),
   setErt: (id, ert) => req('PATCH', `/incidents/${id}/ert`, { ert }),
   crews: () => req('GET', '/crews'),
+  // GPS trail of one crew between two instants (newest `limit` fixes, oldest -> newest).
+  crewTrack: (id, from, to, limit = 5000) => req('GET', `/mobile/crews/${encodeURIComponent(id)}/track?${new URLSearchParams({ from, to, limit })}`),
   nearestCrews: (incidentId) => req('GET', `/incidents/${incidentId}/nearest-crews`),
   alarms: () => req('GET', '/alarms'),
   ackAlarm: (id) => req('POST', `/alarms/${id}/ack`),

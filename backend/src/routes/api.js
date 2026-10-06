@@ -635,7 +635,8 @@ api.get('/mobile/crews/:id/track', async (req, res) => {
   const to = req.query.to ? new Date(req.query.to) : new Date();
   const from = req.query.from ? new Date(req.query.from) : new Date(to.getTime() - 12 * 3600 * 1000);
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return res.status(400).json({ error: 'invalid from/to' });
-  res.json(await repo.crewTrack(req.params.id, from.toISOString(), to.toISOString()));
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 2000, 1), 10000);
+  res.json(await repo.crewTrack(req.params.id, from.toISOString(), to.toISOString(), limit));
 });
 
 // ---------- offline map tile pack ----------

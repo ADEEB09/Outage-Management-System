@@ -813,3 +813,22 @@ body{
 .trace-btn[disabled]{opacity:.6;cursor:wait}
 .mk-origin{width:22px;height:22px;border-radius:50%;background:#dc2626;border:3px solid #fff;box-shadow:0 0 0 3px rgba(220,38,38,.35),0 2px 6px rgba(0,0,0,.3)}
 .mk-bound{width:20px;height:20px;box-sizing:border-box;border-radius:4px;background:#7c3aed;border:3px solid #fff;transform:rotate(45deg);box-shadow:0 0 0 3px rgba(124,58,237,.35),0 2px 6px rgba(0,0,0,.3)}
+
+/* ---- crew trails (Network map) ---- */
+.sw-trails{background:#7c3aed;height:4px;width:13px;border-radius:2px;align-self:center}
+.trail-ctl{margin:4px 8px 6px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}
+.trail-win{display:flex;gap:4px;margin-bottom:7px}
+.trail-win .tw{flex:1;border:1px solid var(--line);background:var(--surface);color:var(--ink-2);border-radius:7px;padding:5px 0;font-size:11.5px;font-weight:600;cursor:pointer}
+.trail-win .tw.on{background:var(--navy);border-color:var(--navy);color:#fff}
+.trail-ctl .lp-clear{margin:0 0 7px;width:100%}
+.trail-list{display:flex;flex-direction:column;gap:1px;max-height:150px;overflow-y:auto;padding-right:2px}
+.trail-row{display:grid;grid-template-columns:10px minmax(0,1fr);column-gap:8px;align-items:center;text-align:left;border:0;background:transparent;border-radius:7px;padding:4px;cursor:pointer;color:var(--ink);flex:none}
+.trail-row:hover{background:var(--surface)}
+.trail-sw{width:10px;height:10px;border-radius:50%;grid-row:1 / span 2}
+.trail-name{font-size:12.5px;font-weight:600}
+.trail-meta{grid-column:2;font-size:11px;color:var(--muted);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trail-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trail-warn{font-size:11px;color:#b91c1c;margin:0 0 6px}
+.trail-ctl .lp-knote{margin-top:6px;font-size:10px;line-height:1.35;color:var(--faint)}
+.trail-btn{background:#7c3aed}
+.trail-sum{margin-top:8px}
