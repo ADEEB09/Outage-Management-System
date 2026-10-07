@@ -135,6 +135,7 @@ export default function TCS() {
                       <span className={`chip chip-${STATE_CHIP[r.state] || 'muted'}`}>{r.state}</span>
                       {r.linked_id && <span className="mono muted" style={{ marginLeft: 6 }}>{r.linked_id}</span>}
                       {r.state_reason && <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>{r.state_reason}</div>}
+                      {r.callback_at && <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>Callback sent {timeAgo(r.callback_at)}</div>}
                     </td>
                     <td className="muted">{timeAgo(r.ts)}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>{r.state === 'Unassigned' && (

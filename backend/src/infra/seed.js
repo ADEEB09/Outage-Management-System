@@ -8,7 +8,7 @@ export async function seed({ force = false } = {}) {
   if (Number(n) > 0 && !force) return { skipped: true };
 
   await db.tx(async (t) => {
-    for (const table of ['job_updates','jobs','incident_events','trouble_calls','alarms','audit_log','complaints','incidents','crews']) {
+    for (const table of ['job_updates','jobs','incident_events','notifications','trouble_calls','alarms','audit_log','complaints','incidents','crews']) {
       await t.none(`DELETE FROM ${table}`);
     }
   });

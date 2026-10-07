@@ -12,6 +12,13 @@ import { connectRedis, isRedisConnected } from './infra/redis.js';
 import { handleScadaEvent, startScadaConsumer, _resetDedupState } from './realtime/scada.js';
 import { publishRestoration, _resetPublishedState } from './realtime/restoration.js';
 import { Dnp3Master, Dnp3TestOutstation, _internal as dnp3Internal } from './realtime/dnp3.js';
+import { computeIndices, customersServed } from './domain/indices.js';
+import { feederAllocations, substationForFeeder } from './domain/prediction.js';
+import { sendRestorationCallbacks } from './realtime/notifier.js';
+
+// Complaint phones are encrypted with ENCRYPTION_KEY (pgcrypto). CI doesn't set
+// one; a throwaway key keeps the callback test's complaint contact readable.
+process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'selftest-only-key';
 
 await migrate();
 await seed({ force: true });
@@ -138,7 +145,7 @@ const server = app.listen(4100, async () => {
   // role guards: a second app instance whose user has none of the allowed roles
   const app2 = express();
   app2.use(express.json());
-  app2.use((req, res, next) => { req.user = { username: 'crew-user', roles: ['field_crew'] }; next(); });
+  app2.use((req, res, next) => { req.user = { username: 'crew-user', roles: ['field_crew_coordinator'] }; next(); });
   app2.use('/api', api);
   const server2 = app2.listen(4101);
   const j2 = async (m, p, b) => {
@@ -149,7 +156,13 @@ const server = app.listen(4100, async () => {
   check('POST /calls/:id/reject is 403 without a permitted role', await j2('POST', '/calls/CALL-006/reject', { reason: 'not valid' }) === 403);
   check('POST /calls/:id/to-incident is 403 without a permitted role', await j2('POST', '/calls/CALL-006/to-incident') === 403);
   check('GET /calls stays readable without those roles', await j2('GET', '/calls') === 200);
+  check('POST /scada/fault is 403 for a crew role (OMS-02)', await j2('POST', '/scada/fault', { tag: 'X.Y.CB1.TRIP' }) === 403);
   server2.close();
+  const savedSimFlag = process.env.ENABLE_SCADA_SIMULATION;
+  delete process.env.ENABLE_SCADA_SIMULATION;
+  const simOff = await j('POST', '/scada/simulate', { tag: 'X.Y.CB1.TRIP', event: 'trip' });
+  check('POST /scada/simulate is 403 without ENABLE_SCADA_SIMULATION, even for system_admin', simOff.status === 403 && /ENABLE_SCADA_SIMULATION/.test(simOff.body.error));
+  if (savedSimFlag !== undefined) process.env.ENABLE_SCADA_SIMULATION = savedSimFlag;
 
   // Phase 1 tail — Redis read-through cache on /indicators
   const first = await j('GET', '/indicators');
@@ -169,6 +182,8 @@ const server = app.listen(4100, async () => {
   // 2) Severity escalates to critical for a high-customer trip (FR-OMS-004)
   const autoInc = (await j('GET', `/incidents/${r1.incidentId}`)).body;
   check('SCADA severity classified critical (FR-OMS-004)', autoInc.severity === 'critical' && autoInc.source === 'SCADA', autoInc.severity);
+  check('a real customer count on the event wins over the estimate', autoInc.customers === 1200 && autoInc.prediction?.customers_source === 'event' && autoInc.prediction?.method === 'none',
+    `${autoInc.customers}, ${autoInc.prediction?.customers_source}, ${autoInc.prediction?.method}`);
 
   // 3) A second fault on the same feeder within the window is deduplicated (FR-OMS-003)
   const r2 = await handleScadaEvent({ tag: 'DEHRA.FDR7.RELAY2.OC', condition: 'MAJOR', customers: 900 });
@@ -224,6 +239,7 @@ const server = app.listen(4100, async () => {
 
   const pub2 = await publishRestoration(resolvedInc);
   check('restoration command is idempotent — no duplicate send', pub2.skipped === true);
+  check('operator resolve sets resolved_at', !!resolvedInc.resolved_at && !resolvedInc.restored_by);
 
   // ---- Phase 2 — P2.2 DNP3-over-IP protocol adapter (INT-003) ----
   // Link layer correctness, independent of any network/hardware:
@@ -258,8 +274,169 @@ const server = app.listen(4100, async () => {
   const dnp3Incidents = (await j('GET', '/incidents')).body.filter(i => i.cause && i.cause.includes('DNP3TEST'));
   check('DNP3 trip over real TCP auto-creates an incident via the existing pipeline (P2.2)',
     afterDnp3 === beforeDnp3 + 1 && dnp3Incidents.length === 1, dnp3Incidents[0] && dnp3Incidents[0].id);
+  outstation.triggerReclose(7);
+  master.requestBinaryInputEvents();
+  await new Promise((r) => setTimeout(r, 400));
+  const dnp3After = dnp3Incidents[0] && await repo.incident(dnp3Incidents[0].id);
+  check('DNP3 point back to closed = reclose, restores the incident (OMS-02)', dnp3After?.status === 'closed' && dnp3After?.momentary === true, dnp3After?.status);
   master.close();
   await outstation.close();
+
+  // ==== OMS-02 SCADA trip handling + OMS-04 MAIFI ====
+  const trip = (tag, feeder, extra = {}) => handleScadaEvent({ tag, condition: 'CRITICAL', limit_val: 'TRIP', feeder, substation: substationForFeeder(feeder), ...extra });
+  const reclose = (tag) => handleScadaEvent({ tag, event: 'reclose', condition: 'NORMAL', limit_val: 'CLOSED' });
+  const minutesAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+
+  const illegal = await j('POST', '/incidents', { zone: 'Lifecycle Test', severity: 'high', cause: 'Test', feeder: 'FDR-LC' });
+  check('PATCH /status open→resolved is still 409 for operators (SCADA bypass is internal only)',
+    (await j('PATCH', `/incidents/${illegal.body.id}/status`, { status: 'resolved' })).status === 409);
+
+  const alloc = feederAllocations();
+  const allocSum = alloc.reduce((s, f) => s + f.customers, 0);
+  check('kVA-share customer estimates over all feeders sum to CUSTOMERS_SERVED', Math.abs(allocSum - customersServed()) <= alloc.length, `${allocSum} vs ${customersServed()} over ${alloc.length} feeders`);
+
+  // 1) trip -> incident with a feeder-level prediction
+  _resetDedupState();
+  const tp = await trip('JWL3.FDRB.CB1.TRIP', 'UPCL-JP-B');
+  const tpInc = await repo.incident(tp.incidentId);
+  const jpFeeder = alloc.find((f) => f.feeder === 'UPCL-JP-B');
+  const tpEvents = await repo.incidentEvents(tp.incidentId);
+  check('trip creates an incident with a feeder-level downstream prediction',
+    tp.deduplicated === false && tpInc.prediction?.method === 'feeder' && tpInc.prediction.transformers > 0
+      && tpInc.prediction.customers_estimate === jpFeeder.customers && /feeder-level/.test(tpInc.prediction.basis),
+    `${tpInc.prediction?.transformers} DTs, ~${tpInc.prediction?.customers_estimate} customers`);
+  check('no event count: incident.customers takes the estimate (customers_source=estimated)', tpInc.customers === jpFeeder.customers && tpInc.prediction.customers_source === 'estimated');
+  check('trip records trip_tag/open_trip_tags and a prediction timeline event',
+    tpInc.trip_tag === 'JWL3.FDRB.CB1.TRIP' && JSON.stringify(tpInc.open_trip_tags) === '["JWL3.FDRB.CB1.TRIP"]' && tpEvents.some((e) => e.kind === 'predicted' && /Predicted downstream/.test(e.note)));
+  const tpDup = await trip('JWL3.FDRB.CB1.TRIP', 'UPCL-JP-B');
+  check('duplicate trip inside 60 s still dedups, tag not doubled', tpDup.deduplicated === true && tpDup.incidentId === tp.incidentId
+    && (await repo.incident(tp.incidentId)).open_trip_tags.length === 1);
+
+  // 2) reclose inside MOMENTARY_MAX_MIN -> momentary, auto-closed
+  const rc = await reclose('JWL3.FDRB.CB1.TRIP');
+  const tpClosed = await repo.incident(tp.incidentId);
+  check('reclose within 5 min → momentary, auto-closed, restored_by SCADA',
+    rc.restored.length === 1 && tpClosed.status === 'closed' && tpClosed.momentary === true && tpClosed.restored_by === 'SCADA' && !!tpClosed.resolved_at, tpClosed.status);
+  const indM = computeIndices([tpClosed]);
+  check('momentary incident is in MAIFI, not in SAIFI/SAIDI', indM.saifi === 0 && indM.saidi === 0 && indM.maifi === +(tpClosed.customers / customersServed()).toFixed(3) && indM.maifi > 0, `maifi=${indM.maifi}`);
+  check('second reclose of the same tag is a no-op', (await reclose('JWL3.FDRB.CB1.TRIP')).restored.length === 0);
+
+  // 3) two devices on one feeder: restore only after both reclose
+  _resetDedupState();
+  const d1 = await trip('JWL2.FDRA.CB1.TRIP', 'UPCL-JL-A');
+  const d2 = await trip('JWL2.FDRA.REC2.TRIP', 'UPCL-JL-A');
+  check('second device on the same feeder merges into the incident with both tags open',
+    d2.incidentId === d1.incidentId && (await repo.incident(d1.incidentId)).open_trip_tags.length === 2);
+  await reclose('JWL2.FDRA.CB1.TRIP');
+  const half = await repo.incident(d1.incidentId);
+  check('one of two devices reclosed → incident stays open', half.status === 'open' && JSON.stringify(half.open_trip_tags) === '["JWL2.FDRA.REC2.TRIP"]', half.status);
+  await reclose('JWL2.FDRA.REC2.TRIP');
+  check('both devices reclosed → incident restored', (await repo.incident(d1.incidentId)).status === 'closed');
+
+  // 4) a trip merged into a customer-reported incident restores it on reclose
+  _resetDedupState();
+  const anSub = substationForFeeder('UPCL-AN-B');
+  const custOnly = await repo.createIncident({
+    id: await repo.nextIncidentId(), type: 'Power Outage', severity: 'high', status: 'open', zone: 'Arya Nagar', feeder: null,
+    substation: anSub, customers: 3, cause: 'No Supply', lat: null, lon: null, crew_id: null, opened_at: new Date().toISOString(),
+    ert: null, sla_due_at: null, source: 'Customer',
+  });
+  const merged = await trip('ARYA.FDRB.CB1.TRIP', 'UPCL-AN-B');
+  const mergedInc = await repo.incident(custOnly.id);
+  check('trip at the same substation merges into the customer-reported incident and records its tag',
+    merged.incidentId === custOnly.id && mergedInc.open_trip_tags.includes('ARYA.FDRB.CB1.TRIP') && mergedInc.prediction?.method === 'feeder');
+  await reclose('ARYA.FDRB.CB1.TRIP');
+  const custRestored = await repo.incident(custOnly.id);
+  check('reclose restores the merged customer-reported incident', custRestored.status === 'closed' && custRestored.restored_by === 'SCADA', custRestored.status);
+
+  // 5) sustained: restored after > 5 min, with a crew already assigned
+  _resetDedupState();
+  const sus = await trip('LALJ.FDRA.CB1.TRIP', 'UPCL-LW-A');
+  const susAsg = await j('POST', `/incidents/${sus.incidentId}/assign`, { crewId: 'C005', priority: 'Normal' });
+  const jobBefore = susAsg.body.job;
+  await repo.updateIncident(sus.incidentId, { opened_at: minutesAgo(12) });
+  await reclose('LALJ.FDRA.CB1.TRIP');
+  const susInc = await repo.incident(sus.incidentId);
+  const susEvents = await repo.incidentEvents(sus.incidentId);
+  check('restore after > 5 min → sustained: resolved, restored_by SCADA, resolved_at set, not momentary',
+    susInc.status === 'resolved' && susInc.restored_by === 'SCADA' && !!susInc.resolved_at && susInc.momentary === false, susInc.status);
+  check('crew assigned: resolved anyway, timeline asks to confirm crew, job untouched',
+    susEvents.some((e) => e.note === `Restored by SCADA while crew C005 assigned - confirm whether the crew is still needed`)
+      && (await repo.jobs()).find((x) => x.id === jobBefore.id)?.status === jobBefore.status);
+  const indS = computeIndices([susInc]);
+  const susMin = (new Date(susInc.resolved_at) - new Date(susInc.opened_at)) / 60000;
+  check('sustained incident counts in SAIFI/SAIDI using resolved_at, not in MAIFI',
+    indS.maifi === 0 && indS.saifi === +(susInc.customers / customersServed()).toFixed(3) && indS.saidi === +(susInc.customers * susMin / customersServed()).toFixed(2),
+    `saifi=${indS.saifi} saidi=${indS.saidi} (${susMin.toFixed(1)} min)`);
+  const dmsSkip = await publishRestoration(susInc);
+  check('no DMS restoration command for a SCADA-restored incident', dmsSkip.skipped === true && dmsSkip.reason === 'restored by SCADA');
+
+  // 6) hand-worked IEEE 1366 example (shown in the PR): 18,500 customers served
+  //    momentary A: 556 customers, momentary B: 191  -> MAIFI = 747 / 18500 = 0.040
+  //    sustained C: 471 customers for 30 min        -> SAIFI = 471 / 18500 = 0.025
+  //                                                     SAIDI = 471*30 / 18500 = 0.76 min, CAIDI = 30.0
+  const t0 = '2026-10-01T10:00:00.000Z', t30 = '2026-10-01T10:30:00.000Z';
+  const hand = computeIndices([
+    { id: 'A', type: 'outage', severity: 'critical', status: 'closed', momentary: true, customers: 556, opened_at: t0, resolved_at: t0 },
+    { id: 'B', type: 'outage', severity: 'critical', status: 'closed', momentary: true, customers: 191, opened_at: t0, resolved_at: t0 },
+    { id: 'C', type: 'outage', severity: 'critical', status: 'resolved', momentary: false, customers: 471, opened_at: t0, resolved_at: t30 },
+  ]);
+  check('IEEE 1366 hand-worked example: MAIFI 0.040, SAIFI 0.025, SAIDI 0.76, CAIDI 30.0',
+    customersServed() === 18500 && hand.maifi === 0.04 && hand.saifi === 0.025 && hand.saidi === 0.76 && hand.caidi === 30,
+    `maifi=${hand.maifi} saifi=${hand.saifi} saidi=${hand.saidi} caidi=${hand.caidi}`);
+
+  // 7) callbacks: linked calls + complaints, opt-outs, no phone, rejected, idempotent
+  _resetDedupState();
+  const cb = await trip('KNK3.FDRA.CB1.TRIP', 'UPCL-KI-A');
+  const cbId = cb.incidentId;
+  const mkCall = (id, phone, status = 'incident') => repo.createCall({ id, customer: id, phone, address: 'x', category: 'Normal', status, linked_id: cbId, ts: new Date().toISOString() });
+  await mkCall('CALL-CB1', '9811100001');
+  await mkCall('CALL-CB2', '9811100002');
+  await repo.setOptOut('9811100002', 'sms');
+  await mkCall('CALL-CB3', null);
+  await mkCall('CALL-CB4', '9811100004', 'rejected');
+  // Complaint phones need the pgcrypto migrations in db/migrations (not applied
+  // by migrate()); on a database without them the complaint branch is skipped
+  // and must not break the call callbacks.
+  let complaintsReady = true;
+  try {
+    await repo.addComplaint({ qid: await repo.nextQueryId(), external_id: 'EXT-CB', customer: 'Complainant', phone: '9811100005', address: 'x',
+      category: 'No Supply', lat: null, lon: null, dt_id: null, feeder: 'UPCL-KI-A', substation: substationForFeeder('UPCL-KI-A'), incident_id: cbId, action: 'merged', ts: new Date().toISOString() });
+  } catch { complaintsReady = false; }
+  await reclose('KNK3.FDRA.CB1.TRIP');
+  const cbRows = await repo.callbacksForIncident(cbId);
+  const st = (ref) => cbRows.find((n) => n.contact_ref === ref)?.status;
+  const expectRows = complaintsReady ? 4 : 3, expectSent = complaintsReady ? 2 : 1;
+  check(`callbacks: linked call${complaintsReady ? ' and complaint' : ''} called back, opted-out and no-phone recorded as skipped, rejected call excluded`
+      + (complaintsReady ? '' : ' [complaint encryption not set up on this DB: complaint branch skipped]'),
+    cbRows.length === expectRows && st('CALL-CB1') === 'logged' && st('CALL-CB2') === 'skipped-optout' && st('CALL-CB3') === 'skipped-no-contact'
+      && !st('CALL-CB4') && cbRows.filter((n) => /^QRY-/.test(n.contact_ref) && n.status === 'logged').length === (complaintsReady ? 1 : 0),
+    cbRows.map((n) => `${n.contact_ref}:${n.status}`).join(' '));
+  check('callback rows never store the phone number in plaintext', cbRows.every((n) => !n.recipient || /^\*+\d{4}$/.test(n.recipient)) && !cbRows.some((n) => (n.recipient || '').includes('981110')));
+  const cbNote = `Callback initiated to ${expectSent} customer${expectSent === 1 ? '' : 's'} (1 opted out, 1 no phone)`;
+  check(`timeline: "${cbNote}"`, (await repo.incidentEvents(cbId)).some((e) => e.kind === 'callback' && e.note === cbNote));
+  const again = await sendRestorationCallbacks(await repo.incident(cbId));
+  check('callbacks are idempotent per (incident, contact): a retry sends nothing new',
+    again.sent === 0 && again.already === expectRows && (await repo.callbacksForIncident(cbId)).length === expectRows);
+  const cbCalls = (await j('GET', '/calls')).body;
+  check('GET /calls shows callback_at only for calls actually called back',
+    !!cbCalls.find((c) => c.id === 'CALL-CB1')?.callback_at && !cbCalls.find((c) => c.id === 'CALL-CB2')?.callback_at);
+
+  // 8) the FAT hook end to end: /scada/simulate -> bus -> same handler
+  process.env.ENABLE_SCADA_SIMULATION = 'true';
+  _resetDedupState();
+  const simTrip = await j('POST', '/scada/simulate', { tag: 'BHEL2.FDRB.CB1.TRIP', event: 'trip', feeder: 'UPCL-BS-B' });
+  await new Promise((r) => setTimeout(r, 400));
+  const simInc = (await j('GET', '/incidents')).body.find((i) => i.trip_tag === 'BHEL2.FDRB.CB1.TRIP');
+  check('POST /scada/simulate trip (flag on, admin) → SCADA incident with prediction at the right substation',
+    simTrip.status === 202 && simInc?.source === 'SCADA' && simInc?.prediction?.method === 'feeder' && simInc?.substation === substationForFeeder('UPCL-BS-B'), simInc?.id);
+  const simRe = await j('POST', '/scada/simulate', { tag: 'BHEL2.FDRB.CB1.TRIP', event: 'reclose' });
+  await new Promise((r) => setTimeout(r, 400));
+  const simAfter = simInc && await repo.incident(simInc.id);
+  check('POST /scada/simulate reclose → momentary auto-close', simRe.status === 202 && simAfter?.status === 'closed' && simAfter?.momentary === true, simAfter?.status);
+  check('POST /scada/simulate rejects an unknown event (400)', (await j('POST', '/scada/simulate', { tag: 'X.Y', event: 'blink' })).status === 400);
+  check('POST /scada/fault still ingests for system_admin (202)', (await j('POST', '/scada/fault', { tag: 'ZZ.FDR1.CB1.MINOR', condition: 'MINOR' })).status === 202);
+  if (savedSimFlag === undefined) delete process.env.ENABLE_SCADA_SIMULATION; else process.env.ENABLE_SCADA_SIMULATION = savedSimFlag;
 
   console.log('\n  OMS backend self-test\n  ' + '-'.repeat(40));
   results.forEach(([s, n, e]) => console.log(`  [${s}] ${n} ${e}`));

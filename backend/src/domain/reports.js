@@ -61,7 +61,7 @@ export function buildPdf(indices, meta) {
     row('SAIDI (minutes)', indices.saidi, indices.saidiTarget, 'IEEE 1366');
     row('SAIFI', indices.saifi, indices.saifiTarget, 'IEEE 1366');
     row('CAIDI (minutes)', indices.caidi, null, 'IEEE 1366');
-    row('MAIFI', indices.maifi, null, 'IEEE 1366 (placeholder — see note below)');
+    row('MAIFI', indices.maifi, null, 'IEEE 1366');
 
     doc.moveDown(1);
     doc.fontSize(11).font('Helvetica-Bold').fillColor('#0b2033').text('Underlying data');
@@ -72,9 +72,10 @@ export function buildPdf(indices, meta) {
 
     doc.moveDown(1.2);
     doc.fontSize(8).fillColor('#94a3b8').font('Helvetica-Oblique').text(
-      'Note: MAIFI is currently a fixed placeholder value, not computed from real momentary-interruption ' +
-      'events — the incidents schema does not yet distinguish momentary (auto-reclose <5 min) events from ' +
-      'sustained outages. Treat this figure as illustrative until that data is captured.',
+      'Note: MAIFI = customers momentarily interrupted / customers served (IEEE 1366). An interruption is ' +
+      'momentary when SCADA reports the tripped device reclosed within MOMENTARY_MAX_MIN minutes (default 5); ' +
+      'those are excluded from SAIFI/SAIDI/CAIDI. Customer counts for SCADA trips without a metered count are ' +
+      'allocated by the tripped feeder\'s share of installed kVA, so treat them as estimates.',
       { width: 500 }
     );
 

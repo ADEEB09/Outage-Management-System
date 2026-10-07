@@ -66,7 +66,7 @@ export default function Analytics() {
     { k: 'SAIDI', v: ind.saidi, u: 'min/cust', target: ind.saidiTarget, hint: 'System Avg Interruption Duration' },
     { k: 'SAIFI', v: ind.saifi, u: 'int/cust', target: ind.saifiTarget, hint: 'System Avg Interruption Frequency' },
     { k: 'CAIDI', v: ind.caidi, u: 'min', hint: 'Customer Avg Interruption Duration' },
-    { k: 'MAIFI', v: ind.maifi, u: 'events', hint: 'Momentary Avg Interruption Frequency' },
+    { k: 'MAIFI', v: ind.maifi, u: 'events', hint: 'Momentary interruptions (SCADA reclose within 5 min) per customer served' },
   ] : [];
 
   const TABS = [

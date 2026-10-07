@@ -43,3 +43,4 @@ export function resolve(lat, lon) {
 }
 
 export const substations = NET.substations;
+export const distTx = NET.distTx;
