@@ -168,11 +168,17 @@ export const repo = {
     );
     return moved.rowCount > 0;
   },
+  // The newest `limit` fixes in the window, returned oldest -> newest. (Taking the
+  // OLDEST `limit` instead would silently drop the most recent part of a long
+  // window, which is the part dispatch wants to see.) received_at lets a client
+  // tell a live fix from one recorded offline and uploaded later.
   crewTrack: (crewId, from, to, limit = 2000) =>
     db.any(
-      `SELECT lat, lon, accuracy, speed, heading, recorded_at FROM crew_locations
-       WHERE crew_id=$/crewId/ AND recorded_at BETWEEN $/from/ AND $/to/
-       ORDER BY recorded_at ASC LIMIT $/limit/`,
+      `SELECT * FROM (
+         SELECT lat, lon, accuracy, speed, heading, recorded_at, received_at FROM crew_locations
+         WHERE crew_id=$/crewId/ AND recorded_at BETWEEN $/from/ AND $/to/
+         ORDER BY recorded_at DESC LIMIT $/limit/
+       ) t ORDER BY recorded_at ASC`,
       { crewId, from, to, limit }
     ),
   // Available crews nearest an incident, using real PostGIS distance -- replaces

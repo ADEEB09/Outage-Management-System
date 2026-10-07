@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api, socket } from '../lib/api.js';
+import { TRAIL_WINDOWS, DEFAULT_WINDOW, MAX_POINTS, windowMs, normalizeTrack, splitTrail, summarize, thinDots, fmtClock, fmtDur, fmtAgo } from '../lib/trail.js';
 import { Icon, SevBadge, StatusBadge, useLiveRefresh } from '../lib/ui.jsx';
 
 const SEVC = { critical: '#e23b2e', high: '#ef9021', medium: '#3b82f6', low: '#22b06b' };
@@ -17,7 +18,7 @@ const LAYER_GROUPS = [
   ['Network', [['htLines', 'HT network', true], ['feeders', 'Feeder lines', true], ['substations', 'Substations', true],
     ['powerTx', 'Power transformers', false], ['distTx', 'Distribution txr', false],
     ['switches', 'Switches', false], ['rmus', 'RMUs', false], ['fuses', 'Drop-out fuses', false]]],
-  ['Operations', [['incidents', 'Incidents', true], ['crews', 'Crews', true]]],
+  ['Operations', [['incidents', 'Incidents', true], ['crews', 'Crews', true], ['trails', 'Crew trails', false]]],
 ];
 // CIM topology (network.* PostGIS schema) -- real connectivity data, imported
 // from a CIM RDF/XML export. Separate from the Haridwar layers above, which
@@ -35,6 +36,9 @@ const TOPO_STYLE = {
 };
 const topoGroupOf = (cls) => (cls === 'ACLineSegment' ? 'topoLines' : ['Structure', 'Junction', 'Meter'].includes(cls) ? 'topoStruct' : 'topoEquip');
 const SECTION_COLOR = '#ff6a00';
+// One stable colour per crew for its trail (a crew keeps its colour as its status changes).
+const TRAIL_COLORS = ['#e11d48', '#7c3aed', '#0891b2', '#ca8a04', '#16a34a', '#db2777', '#2563eb', '#ea580c'];
+const trailColor = (id) => { let h = 0; for (let i = 0; i < String(id).length; i++) h = (h * 31 + String(id).charCodeAt(i)) >>> 0; return TRAIL_COLORS[h % TRAIL_COLORS.length]; };
 
 export default function NetworkMap() {
   const [net, setNet] = useState(null);
@@ -49,6 +53,11 @@ export default function NetworkMap() {
   const [topo, setTopo] = useState(null);       // GeoJSON from /api/network/topology (null = loading)
   const [trace, setTrace] = useState(null);     // result of /api/network/section/:mrid
   const [traceBusy, setTraceBusy] = useState(false);
+  const [trailWin, setTrailWin] = useState(DEFAULT_WINDOW); // how far back trails reach
+  const [trailCrew, setTrailCrew] = useState(null);         // null = every crew, else one crew id
+  const [trails, setTrails] = useState({});                 // crew id -> normalised GPS fixes
+  const [trailBusy, setTrailBusy] = useState(false);
+  const [trailFailed, setTrailFailed] = useState(false);
 
   const boxRef = useRef();
   const mapRef = useRef(null);
@@ -59,6 +68,8 @@ export default function NetworkMap() {
   const topoIdx = useRef({});       // mrid -> { layer, isLine, base, latlng }
   const traceLayer = useRef(null);  // origin / boundary markers for the active trace
   const selRef = useRef(null); selRef.current = sel;
+  const trailsOnRef = useRef(false), trailCrewRef = useRef(null), trailWinRef = useRef(DEFAULT_WINDOW);
+  const trailTimers = useRef({}), trailFit = useRef(null);
 
   useEffect(() => { api.network().then(setNet).catch(() => setNet({ error: true })); }, []);
   useEffect(() => { api.networkTopology().then(setTopo).catch(() => setTopo({ error: true })); }, []);
@@ -190,6 +201,7 @@ export default function NetworkMap() {
 
     groups.current.incidents = mk();
     groups.current.crews = mk();
+    groups.current.trails = mk();
     crewMarkers.current.clear();
     groups.current.built = true;
     // add the default-on layers
@@ -332,6 +344,83 @@ export default function NetworkMap() {
     });
   }, [layers, ready]);
 
+  // ---- crew trails ---------------------------------------------------------------
+  // The path each crew's phone has reported (GET /mobile/crews/:id/track), drawn from the
+  // server's stored fixes -- including ones the phone recorded offline and uploaded later.
+  const trailsOn = !!layers.trails;
+  trailsOnRef.current = trailsOn; trailCrewRef.current = trailCrew; trailWinRef.current = trailWin;
+  const crewIdsKey = crews.map((c) => c.id).join(',');
+  const crewNamesKey = crews.map((c) => c.name).join('|');
+
+  async function fetchTrail(id) {
+    const now = Date.now();
+    const rows = await api.crewTrack(id, new Date(now - windowMs(trailWinRef.current)).toISOString(), new Date(now + 60000).toISOString(), MAX_POINTS);
+    return normalizeTrack(rows);
+  }
+  const trailIds = () => (trailCrewRef.current ? [trailCrewRef.current] : crewIdsKey.split(',').filter(Boolean));
+
+  // load when the layer is switched on, the window or the chosen crew changes, or crews appear
+  useEffect(() => {
+    if (!trailsOn) return undefined;
+    let dead = false;
+    setTrailBusy(true);
+    Promise.all(trailIds().map((id) => fetchTrail(id).then((p) => [id, p]).catch(() => [id, null]))).then((entries) => {
+      if (dead) return;
+      setTrails((t) => ({ ...t, ...Object.fromEntries(entries.filter(([, p]) => p)) }));
+      setTrailFailed(entries.some(([, p]) => !p));
+      setTrailBusy(false);
+      const want = trailFit.current, mine = entries.find(([id, p]) => id === want && p && p.length);
+      if (mine && mapRef.current) { trailFit.current = null; mapRef.current.flyToBounds(L.latLngBounds(mine[1].map((p) => [p.lat, p.lon])).pad(0.25), { duration: 0.5, maxZoom: 18 }); }
+    });
+    return () => { dead = true; };
+  }, [trailsOn, trailWin, trailCrew, crewIdsKey]); // eslint-disable-line
+
+  // a crew just reported a position: refresh that crew's trail shortly (batched)
+  useEffect(() => {
+    const h = (c) => {
+      if (!trailsOnRef.current || !c || !c.id) return;
+      if (trailCrewRef.current && trailCrewRef.current !== c.id) return;
+      clearTimeout(trailTimers.current[c.id]);
+      trailTimers.current[c.id] = setTimeout(() => { fetchTrail(c.id).then((p) => setTrails((t) => ({ ...t, [c.id]: p }))).catch(() => {}); }, 1500);
+    };
+    socket.on('crew.updated', h);
+    return () => { socket.off('crew.updated', h); Object.values(trailTimers.current).forEach(clearTimeout); };
+  }, []); // eslint-disable-line
+
+  // keep the time window sliding even when nothing new arrives
+  useEffect(() => {
+    if (!trailsOn) return undefined;
+    const iv = setInterval(() => { trailIds().forEach((id) => fetchTrail(id).then((p) => setTrails((t) => ({ ...t, [id]: p }))).catch(() => {})); }, 60000);
+    return () => clearInterval(iv);
+  }, [trailsOn, crewIdsKey]); // eslint-disable-line
+
+  // draw
+  useEffect(() => {
+    const g = groups.current.trails; if (!g) return;
+    g.clearLayers();
+    const names = Object.fromEntries(crews.map((c) => [c.id, c.name]));
+    (trailCrew ? [trailCrew] : Object.keys(trails)).forEach((id) => {
+      const pts = trails[id]; if (!pts || !pts.length) return;
+      const col = trailColor(id), nm = names[id] || id;
+      const { legs, gaps } = splitTrail(pts);
+      legs.forEach((leg) => { if (leg.length > 1) L.polyline(leg.map((p) => [p.lat, p.lon]), { color: col, weight: 4, opacity: 0.85, lineJoin: 'round', interactive: false }).addTo(g); });
+      gaps.forEach(([a, b]) => L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: col, weight: 2.5, opacity: 0.7, dashArray: '2 8' })
+        .bindTooltip(`${nm}: no position received for ${fmtDur(b.t - a.t)} (${fmtClock(a.t)} – ${fmtClock(b.t)}); route unknown`, { sticky: true }).addTo(g));
+      thinDots(pts).forEach((p) => L.circleMarker([p.lat, p.lon], { radius: 3.6, color: col, weight: p.late ? 2 : 1, fillColor: p.late ? '#ffffff' : col, fillOpacity: p.late ? 1 : 0.95 })
+        .bindTooltip(`${nm} · ${fmtClock(p.t)}${p.accuracy != null ? ` · ±${Math.round(p.accuracy)} m` : ''}${p.late ? ' · recorded offline, uploaded later' : ''}`).addTo(g));
+      const f = pts[0];
+      L.circleMarker([f.lat, f.lon], { radius: 7, color: '#ffffff', weight: 2.5, fillColor: col, fillOpacity: 1 }).bindTooltip(`${nm} · trail start ${fmtClock(f.t)}`).addTo(g);
+    });
+  }, [trails, trailCrew, crewNamesKey, ready]); // eslint-disable-line
+
+  function focusTrail(id) {
+    setLayers((l) => ({ ...l, trails: true }));
+    setTrailCrew(id);
+    const pts = trails[id];
+    if (pts && pts.length && mapRef.current) mapRef.current.flyToBounds(L.latLngBounds(pts.map((p) => [p.lat, p.lon])).pad(0.25), { duration: 0.5, maxZoom: 18 });
+    else trailFit.current = id;
+  }
+
   // highlight the selected feeder circuit
   useEffect(() => {
     Object.entries(feederIdx.current).forEach(([name, arr]) => {
@@ -395,7 +484,7 @@ export default function NetworkMap() {
               <div className="lp-h">{group}</div>
               {group.startsWith('Topology') && <div className="lp-sub">From CIM import · click any item, then “Trace electrical section”</div>}
               {ls.map(([k, label]) => {
-                const n = k.startsWith('topo') ? topoCounts[k] : k === 'incidents' ? plottedInc.length : k === 'crews' ? crews.length : (c[k === 'feeders' ? 'feederLines' : k] || 0);
+                const n = k.startsWith('topo') ? topoCounts[k] : k === 'incidents' ? plottedInc.length : k === 'crews' ? crews.length : k === 'trails' ? Object.values(trails).filter((p) => p && p.length).length : (c[k === 'feeders' ? 'feederLines' : k] || 0);
                 return (
                   <label key={k} className={`lp-row ${layers[k] ? 'on' : ''}`}>
                     <input type="checkbox" checked={!!layers[k]} onChange={() => setLayers((l) => ({ ...l, [k]: !l[k] }))} />
@@ -404,6 +493,9 @@ export default function NetworkMap() {
                   </label>
                 );
               })}
+              {group === 'Operations' && trailsOn && (
+                <TrailPanel crews={crews} trails={trails} trailCrew={trailCrew} trailWin={trailWin} setTrailWin={setTrailWin}
+                  busy={trailBusy} failed={trailFailed} onFocus={focusTrail} onAll={() => setTrailCrew(null)} />)}
             </div>
           ))}
           {selFeeder && <button className="lp-clear" onClick={() => { setSelFeeder(null); setSel(null); }}>Clear feeder highlight</button>}
@@ -498,12 +590,63 @@ export default function NetworkMap() {
                       <button className="trace-btn ghost" onClick={() => setTrace(null)}>Clear trace</button>
                     </div>)}
                 </>}
-                {sel.kind === 'crew' && <><span className="chip chip-soft">Field crew</span><KV k="Lead" v={sel.lead} /><KV k="Status" v={sel.status ? sel.status.replace('_', ' ') : ''} /><KV k="Location" v={sel.location} /><KV k="Skills" v={sel.skills} /></>}
+                {sel.kind === 'crew' && <><span className="chip chip-soft">Field crew</span><KV k="Lead" v={sel.lead} /><KV k="Status" v={sel.status ? sel.status.replace('_', ' ') : ''} /><KV k="Location" v={sel.location} /><KV k="Skills" v={sel.skills} />
+                  <CrewTrailInfo pts={trails[sel.id]} win={trailWin} lastFix={sel.location_updated_at} onShow={() => focusTrail(sel.id)} /></>}
               </div>
             </div>
           )}
         </div>
       </div>
+    </>
+  );
+}
+
+// Side-panel list of crew trails: window picker, one row per crew, and an honest
+// "no fixes" line (with the last time the server heard from that crew) when there is nothing to draw.
+function TrailPanel({ crews, trails, trailCrew, trailWin, setTrailWin, busy, failed, onFocus, onAll }) {
+  const rows = trailCrew ? crews.filter((c) => c.id === trailCrew) : crews;
+  return (
+    <div className="trail-ctl">
+      <div className="trail-win" role="group" aria-label="Trail time window">
+        {TRAIL_WINDOWS.map(([k]) => <button key={k} className={`tw ${trailWin === k ? 'on' : ''}`} onClick={() => setTrailWin(k)}>{k}</button>)}
+      </div>
+      {trailCrew && <button className="lp-clear" onClick={onAll}>Showing one crew · show all crews</button>}
+      {failed && <div className="trail-warn">Some trails could not be loaded.</div>}
+      <div className="trail-list">
+        {rows.map((c) => {
+          const pts = trails[c.id], s = pts ? summarize(pts) : null;
+          return (
+            <button key={c.id} className="trail-row" onClick={() => onFocus(c.id)}
+              title={pts && !s.count ? `${c.name}: no position in the last ${trailWin}. Last heard ${c.location_updated_at ? fmtAgo(c.location_updated_at) : 'never'}.` : "Zoom to this crew's trail"}>
+              <span className="trail-sw" style={{ background: trailColor(c.id) }} />
+              <span className="trail-name">{c.name}</span>
+              <span className="trail-meta">
+                {!pts ? (busy ? 'loading…' : '—')
+                  : s.count ? `${s.count} fixes · ${(s.distanceM / 1000).toFixed(2)} km`
+                    : c.location_updated_at ? `no fixes · ${fmtAgo(c.location_updated_at)}` : 'no fixes yet'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="lp-knote" title="Hollow dots were recorded offline and uploaded later. A dashed line means no position was received for 10+ minutes, so the route in between is unknown.">Hollow dot = recorded offline · dashed = 10+ min gap</div>
+    </div>
+  );
+}
+
+// Trail summary + button inside the selected crew's detail card.
+function CrewTrailInfo({ pts, win, lastFix, onShow }) {
+  const s = pts ? summarize(pts) : null;
+  return (
+    <>
+      <button className="trace-btn trail-btn" onClick={onShow}>Show trail · last {win}</button>
+      {s && s.count > 0 && <div className="trail-sum">
+        <KV k="Fixes" v={String(s.count)} mono /><KV k="Distance" v={`${(s.distanceM / 1000).toFixed(2)} km`} mono />
+        <KV k="First fix" v={fmtClock(s.firstT)} mono /><KV k="Last fix" v={`${fmtClock(s.lastT)} (${fmtAgo(s.lastT)})`} mono />
+        {s.lateCount > 0 && <KV k="Recorded offline" v={`${s.lateCount} fixes`} mono />}
+        {s.gapCount > 0 && <KV k="Gaps (10+ min)" v={String(s.gapCount)} mono />}
+      </div>}
+      {s && s.count === 0 && <div className="trace-note">No position fixes from this crew's phone in the last {win}. Last heard: {lastFix ? fmtAgo(lastFix) : 'never'}. If the phone is outdoors with tracking on, check its location permission, battery settings and connection.</div>}
     </>
   );
 }
