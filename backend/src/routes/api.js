@@ -401,11 +401,14 @@ const CATEGORY_SEV = { 'Wire Down': 'critical', 'No Supply': 'high', 'Partial Su
 
 const SUPPLY = ['No Supply', 'Partial Supply', 'Voltage'];      // symptoms of one outage
 const OUTAGE_TYPES = ['Power Outage', 'Partial Power', 'Power Quality'];
-// Decide whether a new complaint belongs to an already-open incident at the same substation. (pure, unchanged)
-function pickIncident(candidates, category) {
+// Decide whether a new complaint belongs to an already-open incident at the same substation. (pure)
+// A supply complaint also joins an outage SCADA opened: scada.js creates those with
+// type 'outage' and cause 'SCADA <condition> on <tag>', which neither list above matches.
+const isScadaOutage = (c) => c.source === 'SCADA' || c.type === 'outage';
+export function pickIncident(candidates, category) {
   const supply = SUPPLY.includes(category);
   return candidates.find((c) =>
-    supply ? (OUTAGE_TYPES.includes(c.type) || SUPPLY.includes(c.cause)) : c.cause === category) || null;
+    supply ? (OUTAGE_TYPES.includes(c.type) || SUPPLY.includes(c.cause) || isScadaOutage(c)) : c.cause === category) || null;
 }
 
 // Core intake: takes an external complaint, mints our own query id, resolves the
