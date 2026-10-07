@@ -13,6 +13,7 @@ import { repo } from './infra/repo.js';
 import { requireAuth } from './routes/auth.js';
 import { bus, initBus } from './domain/bus.js';
 import { connectRedis } from './infra/redis.js';
+import { startPlannedNotices } from './realtime/plannedNotices.js';
 import { startSimulator } from './realtime/simulator.js';
 import { startScadaConsumer } from './realtime/scada.js';
 import { startRestorationPublisher } from './realtime/restoration.js';
@@ -113,4 +114,5 @@ http.listen(PORT, () => {
     startSimulator();
   }
   startNotifier();
+  startPlannedNotices(); // OMS-01 advance notices, after the notifier is listening
 });

@@ -19,6 +19,7 @@ import { decodePhotoDataUrl, compressPhoto } from '../domain/photos.js';
 import { CALL_CATEGORIES, CALL_SEVERITY, cleanSubstation, deriveCallState } from '../domain/callState.js';
 import { nanoid } from 'nanoid';
 import { substationForFeeder } from '../domain/prediction.js';
+import { plannedOutageRoutes } from './plannedOutages.js';
 
 export const api = Router();
 
@@ -35,6 +36,11 @@ for (const method of ['get', 'post', 'patch', 'put', 'delete']) {
       ? (req, res, next) => Promise.resolve(h(req, res, next)).catch(next)
       : h));
 }
+
+// OMS-01 planned outages. Mounted first: for planned outages it takes over
+// GET /incidents/:id, PATCH /incidents/:id/status and PATCH
+// /mobile/jobs/:id/status, and passes every other request on unchanged.
+api.use(plannedOutageRoutes);
 
 const actor = (req) => req.header('x-user') || 'operator';
 // ---------- network topology (real Haridwar GIS, loaded once - unchanged, no DB) ----------

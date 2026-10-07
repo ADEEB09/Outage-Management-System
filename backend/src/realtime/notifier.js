@@ -122,11 +122,26 @@ function describe(inc) {
 
 export function startNotifier() {
   bus.subscribe(TOPICS.INCIDENT_CREATED, async (inc) => {
+    // A planned outage is not "detected"; it gets its own advance notice below.
+    if (inc.type === 'Scheduled') return;
     const { where } = describe(inc);
     const subject = `Power outage reported in ${where}`;
     const body = `We have detected a power outage affecting ${where}` +
       (inc.customers ? ` (approx. ${inc.customers} customers)` : '') +
       `. Our crews have been notified and are responding. Incident ref: ${inc.id}.`;
+    await sendEmail(inc.id, subject, body);
+    await sendSms(inc.id, body);
+  });
+
+  // OMS-01 advance notice of a planned outage. The restoration notice is the
+  // ordinary "power restored" message below, sent when it is resolved.
+  bus.subscribe(TOPICS.PLANNED_NOTICE, async ({ incident: inc, windowStart, windowEnd, workDescription }) => {
+    const { where } = describe(inc);
+    const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+    const subject = `Planned power shutdown in ${where}`;
+    const body = `Planned shutdown in ${where} from ${fmt(windowStart)} to ${fmt(windowEnd)} for ${workDescription}` +
+      (inc.customers ? ` (approx. ${inc.customers} customers)` : '') +
+      `. Supply will be restored as soon as the work is complete. Ref: ${inc.id}.`;
     await sendEmail(inc.id, subject, body);
     await sendSms(inc.id, body);
   });

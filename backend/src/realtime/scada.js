@@ -179,6 +179,9 @@ async function handleReclose(evt) {
 
 async function restoreFromScada(inc, tag) {
   if (!canScadaRestore(inc.status)) return null;
+  // A planned outage (OMS-01) is restored only through its switching plan,
+  // after the work permit is returned -- never by a device reporting closed.
+  if (await repo.isPlannedIncident(inc.id)) return null;
   const now = new Date();
   const minutes = (now.getTime() - new Date(inc.opened_at).getTime()) / 60000;
   const momentary = minutes <= momentaryMaxMin();
@@ -299,6 +302,16 @@ export async function handleScadaEvent(evt) {
     await repo.updateIncident(id, { prediction });
     await repo.addIncidentEvent(id, 'SCADA', 'predicted', predictionNote(prediction));
     const inc = await repo.incident(id) || created;
+
+    // A planned outage switching at this substation may explain the trip
+    // (an isolate step opening a breaker). Say so on both timelines, but
+    // still raise the incident: a real fault must never be hidden.
+    if (loc.substation) {
+      for (const po of await repo.activePlannedOutagesAtSubstation(loc.substation)) {
+        await repo.addIncidentEvent(id, 'SCADA', 'field', `Planned outage ${po.incident_id} is ${po.status} at this substation - this trip may be its planned switching; verify before dispatching`);
+        await repo.addIncidentEvent(po.incident_id, 'SCADA', 'field', `SCADA ${evt.condition} on ${evt.tag || key} raised ${id} - check whether it is this outage's planned switching`);
+      }
+    }
 
     recentByAsset.set(key, { incidentId: id, ts: now });
     bus.publish(TOPICS.INCIDENT_CREATED, inc);

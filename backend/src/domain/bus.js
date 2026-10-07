@@ -19,6 +19,12 @@ export const TOPICS = {
   ALARM_ACKED: 'scada.alarm.acked',
   CALL_RECEIVED: 'tcs.call.received',
   CALL_UPDATED: 'tcs.call.updated',
+  // OMS-01 planned outages
+  PLANNED_OUTAGE_UPDATED: 'oms.planned.updated',
+  PLANNED_NOTICE: 'oms.planned.notice',
+  PERMIT_CHANGED: 'oms.permit.changed',
+  STEP_CONFIRMED: 'oms.switching.confirmed',
+  STEP_REJECTED: 'oms.switching.rejected',
   CREW_UPDATED: 'crew.updated',
   JOB_UPDATED: 'crew.job.updated',
   INDICES_UPDATED: 'oms.indices.updated',

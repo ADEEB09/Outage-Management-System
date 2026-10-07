@@ -74,6 +74,10 @@ export async function publishRestoration(incident) {
   // Restored by SCADA = the device itself reported closed, so the DMS already
   // knows; commanding a CLOSE would be redundant (OMS-02).
   if (incident.restored_by === 'SCADA') return { skipped: true, reason: 'restored by SCADA' };
+  // Planned outage (OMS-01): every CLOSE was an operated, confirmed step of
+  // its switching plan. Commanding the DMS on top would be a second,
+  // unplanned switching operation.
+  if (incident.restored_by === 'SWITCHING_PLAN') return { skipped: true, reason: 'restored by switching plan' };
   if (await alreadyPublished(incident.id)) return { skipped: true, reason: 'already published' };
   const command = buildCommand(incident);
   try {

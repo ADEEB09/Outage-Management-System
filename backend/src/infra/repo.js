@@ -213,17 +213,29 @@ export const repo = {
     return repo.complaint(c.qid);
   },
   // Active incidents at a substation within the correlation window (most recent first).
+  // Planned outages (OMS-01) are never candidates: a SCADA trip merged into
+  // one would get a trip tag, and its reclose would then "restore" the
+  // planned outage while the crew is still working under a permit.
   activeIncidentsAtSubstation: (substation, windowMin = 240) => {
     const cutoff = new Date(Date.now() - windowMin * 60000).toISOString();
     return db.any(
-      `SELECT * FROM incidents
+      `SELECT * FROM incidents i
        WHERE substation IS NOT DISTINCT FROM $/substation/
          AND status NOT IN ('resolved','closed','cancelled')
          AND opened_at >= $/cutoff/
+         AND NOT EXISTS (SELECT 1 FROM planned_outages po WHERE po.incident_id = i.id)
        ORDER BY opened_at DESC`,
       { substation, cutoff }
     );
   },
+  isPlannedIncident: async (incidentId) =>
+    !!(await db.oneOrNone('SELECT 1 FROM planned_outages WHERE incident_id=$1', [incidentId])),
+  // Planned outages with supply off (or being switched) at a substation.
+  activePlannedOutagesAtSubstation: (substation) => db.any(
+    `SELECT po.id, po.incident_id, i.status FROM planned_outages po JOIN incidents i ON i.id = po.incident_id
+     WHERE i.substation IS NOT DISTINCT FROM $1 AND i.status IN ('isolating','in_progress','restoring')`, [substation]),
+  latestPermitForJob: (jobId) =>
+    db.oneOrNone('SELECT * FROM work_permits WHERE job_id=$1 ORDER BY requested_at DESC LIMIT 1', [jobId]),
 
   // ---- crews
   crews: async () => (await db.any('SELECT * FROM crews ORDER BY name')).map(parseSkills),
