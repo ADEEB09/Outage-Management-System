@@ -187,8 +187,8 @@ export const repo = {
   // ---- trouble calls
   calls: () => db.any('SELECT * FROM trouble_calls ORDER BY ts DESC'),
   createCall: async (c) => {
-    await db.none(`INSERT INTO trouble_calls (id,customer,phone,address,category,status,linked_id,ts)
-      VALUES ($/id/,$/customer/,$/phone/,$/address/,$/category/,$/status/,$/linked_id/,$/ts/)`, c);
+    await db.none(`INSERT INTO trouble_calls (id,customer,phone,address,category,status,linked_id,ts,area)
+      VALUES ($/id/,$/customer/,$/phone/,$/address/,$/category/,$/status/,$/linked_id/,$/ts/,$/area/)`, { area: null, ...c });
     return db.oneOrNone('SELECT * FROM trouble_calls WHERE id=$1', [c.id]);
   },
   updateCall: async (id, patch) => {

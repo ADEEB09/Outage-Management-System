@@ -43,7 +43,29 @@ const server = app.listen(4100, async () => {
   const check = (name, cond, extra = '') => { results.push([cond ? 'PASS' : 'FAIL', name, extra]); };
 
   const inc = await j('GET', '/incidents');
-  check('GET /incidents returns seeded rows', inc.body.length === 7, `(${inc.body.length})`);
+  check('GET /incidents returns seeded rows', inc.body.length === 9, `(${inc.body.length})`);
+
+  // ---- OMS-02 trouble calls: derived state per call (checked first, before the
+  // lifecycle tests below move seeded incidents around) ----
+  const seededCalls = (await j('GET', '/calls')).body;
+  const stateOf = (id) => seededCalls.find((c) => c.id === id);
+  const expectState = {
+    'CALL-001': 'Assigned', 'CALL-002': 'Unassigned', 'CALL-003': 'Incident', 'CALL-004': 'Completed',
+    'CALL-005': 'Assigned', 'CALL-006': 'Unassigned', 'CALL-007': 'Rejected', 'CALL-008': 'Closed',
+    'CALL-009': 'Rejected', 'CALL-010': 'Incident', 'CALL-011': 'Assigned',
+  };
+  for (const [id, want] of Object.entries(expectState)) {
+    check(`call ${id} derived state = ${want}`, stateOf(id)?.state === want, `(${stateOf(id)?.state})`);
+  }
+  check('resolved incident keeps its crew but call shows Completed (terminal before crew test)',
+    stateOf('CALL-004')?.crew_id === 'C004' && stateOf('CALL-004')?.state === 'Completed');
+  check('rejected call carries its reason', stateOf('CALL-007')?.state_reason === 'Duplicate of CALL-001 (same feeder fault)');
+  check('cancelled incident shows call Rejected with reason', stateOf('CALL-009')?.state_reason === 'Incident cancelled (false alarm)');
+  check('GET /calls row shape', ['id', 'customer', 'phone', 'address', 'category', 'status', 'linked_id', 'ts', 'area',
+    'reject_reason', 'rejected_at', 'rejected_by', 'state', 'state_reason', 'incident_status', 'crew_id'].every((k) => k in seededCalls[0]));
+  check('seed has Premium-VIP calls and every category', ['Normal', 'Critical', 'Premium-VIP', 'Medical'].every((c) => seededCalls.some((x) => x.category === c)));
+  const scadaOutages = (await j('GET', '/incidents')).body.filter((i) => i.source === 'SCADA');
+  check('seed has SCADA outages for the Outages tab', scadaOutages.length >= 4 && scadaOutages.every((i) => i.substation), `(${scadaOutages.length})`);
 
   const ind = await j('GET', '/indicators');
   check('indicators computed', ind.body.saidi > 0 && ind.body.caidi < 100,
@@ -72,6 +94,62 @@ const server = app.listen(4100, async () => {
 
   const tcs = await j('POST', '/calls/CALL-002/to-incident');
   check('trouble call → incident (FR-OMS-005)', tcs.status === 201);
+
+  // ---- OMS-02 trouble calls: log, validate, reject, promote ----
+  const areas = (await j('GET', '/calls/areas')).body;
+  check('GET /calls/areas returns {value,label} from the real substation list',
+    areas.length > 0 && areas.every((a) => a.value && a.label) && areas.some((a) => a.value === '33/11 kV BHOOPATWALA S/s' && a.label === 'BHOOPATWALA'), `(${areas.length})`);
+  const AREA = '33/11 kV BHOOPATWALA S/s';
+  const mk = (category, extra = {}) => j('POST', '/calls', { customer: 'Test Cust', phone: '9000000000', address: '1 Test Rd', category, area: AREA, ...extra });
+  const made = {};
+  for (const cat of ['Normal', 'Critical', 'Premium-VIP', 'Medical']) {
+    made[cat] = await mk(cat);
+    check(`POST /calls accepts category ${cat}`, made[cat].status === 201 && made[cat].body.category === cat && made[cat].body.area === AREA && made[cat].body.status === 'unassigned');
+  }
+  check('POST /calls rejects an unknown category (400)', (await mk('Urgent')).status === 400);
+  check('POST /calls rejects a missing field (400)', (await j('POST', '/calls', { customer: 'x', phone: '1', category: 'Normal' })).status === 400);
+  check('POST /calls rejects an unknown area (400)', (await mk('Normal', { area: 'Nowhere S/s' })).status === 400);
+  const noArea = await mk('Normal', { area: undefined });
+  check('POST /calls area is optional', noArea.status === 201 && noArea.body.area === null);
+
+  const rj = (id, body) => j('POST', `/calls/${id}/reject`, body);
+  check('reject needs a reason (400)', (await rj(made.Normal.body.id, {})).status === 400);
+  check('reject reason too short (400)', (await rj(made.Normal.body.id, { reason: 'x' })).status === 400);
+  check('reject reason too long (400)', (await rj(made.Normal.body.id, { reason: 'x'.repeat(501) })).status === 400);
+  check('a call linked to an incident cannot be rejected (409)', (await rj('CALL-001', { reason: 'not valid' })).status === 409);
+  check('reject unknown call (404)', (await rj('CALL-NOPE', { reason: 'not valid' })).status === 404);
+  const rejected = await rj(made.Normal.body.id, { reason: 'Caller hung up, no fault' });
+  check('reject sets status + reject_* columns', rejected.status === 200 && rejected.body.status === 'rejected'
+    && rejected.body.reject_reason === 'Caller hung up, no fault' && !!rejected.body.rejected_at && !!rejected.body.rejected_by);
+  check('rejecting twice is refused (409)', (await rj(made.Normal.body.id, { reason: 'again please' })).status === 409);
+  const afterReject = (await j('GET', '/calls')).body.find((c) => c.id === made.Normal.body.id);
+  check('rejected call is displayed as Rejected with its reason', afterReject.state === 'Rejected' && afterReject.state_reason === 'Caller hung up, no fault');
+
+  const expectSev = { 'Premium-VIP': 'high', Critical: 'critical', Medical: 'critical' };
+  for (const [cat, sev] of Object.entries(expectSev)) {
+    const p = await j('POST', `/calls/${made[cat].body.id}/to-incident`);
+    check(`promote ${cat} → severity ${sev}, area copied to incident.substation`, p.status === 201 && p.body.severity === sev && p.body.substation === AREA, `(${p.body.severity}, ${p.body.substation})`);
+  }
+  const pn = await j('POST', `/calls/${noArea.body.id}/to-incident`);
+  check('promote Normal → severity medium; no area stays null', pn.status === 201 && pn.body.severity === 'medium' && pn.body.substation === null);
+  const afterPromote = (await j('GET', '/calls')).body.find((c) => c.id === made.Medical.body.id);
+  check('promoted call is displayed as Incident', afterPromote.state === 'Incident' && afterPromote.linked_id.startsWith('INC-'), afterPromote.state);
+
+  // role guards: a second app instance whose user has none of the allowed roles
+  const app2 = express();
+  app2.use(express.json());
+  app2.use((req, res, next) => { req.user = { username: 'crew-user', roles: ['field_crew'] }; next(); });
+  app2.use('/api', api);
+  const server2 = app2.listen(4101);
+  const j2 = async (m, p, b) => {
+    const r = await fetch('http://127.0.0.1:4101/api' + p, { method: m, headers: { 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+    return r.status;
+  };
+  check('POST /calls is 403 without a permitted role', await j2('POST', '/calls', { customer: 'x', phone: '1', address: 'a', category: 'Normal' }) === 403);
+  check('POST /calls/:id/reject is 403 without a permitted role', await j2('POST', '/calls/CALL-006/reject', { reason: 'not valid' }) === 403);
+  check('POST /calls/:id/to-incident is 403 without a permitted role', await j2('POST', '/calls/CALL-006/to-incident') === 403);
+  check('GET /calls stays readable without those roles', await j2('GET', '/calls') === 200);
+  server2.close();
 
   // Phase 1 tail — Redis read-through cache on /indicators
   const first = await j('GET', '/indicators');
