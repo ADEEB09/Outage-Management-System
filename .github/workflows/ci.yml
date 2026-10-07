@@ -87,6 +87,16 @@ jobs:
           KAFKA_BROKERS: localhost:9092
         run: node src/selftest.js
 
+      # OMS-01 planned outages: switching order, permits, safety log, SCADA/DMS
+      # guards, crew-app offline rules, and fault jobs unchanged.
+      - name: Run OMS-01 self-test
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://oms:oms@localhost:5432/oms
+          REDIS_URL: redis://localhost:6379
+          KAFKA_BROKERS: localhost:9092
+        run: node src/selftest-oms01.js
+
   # ────────────────────────────────────────────────────────────────
   # Builds both Docker images to prove they still build cleanly on every
   # push -- the same two builds we proved work by hand, now automatic.
