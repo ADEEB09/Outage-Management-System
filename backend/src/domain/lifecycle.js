@@ -12,18 +12,43 @@ export const TRANSITIONS = {
   cancelled:   [],
 };
 
+// Planned outages (OMS-01): supply is switched off on purpose. Most moves are
+// driven by the switching plan and the work permit (domain/plannedOutage.js
+// decides when), not by an operator button. Once isolation has started the
+// only way out is through restoring: there is deliberately no
+// isolating/in_progress -> cancelled.
+export const PLANNED_TRANSITIONS = {
+  scheduled:   ['notified', 'cancelled'],
+  notified:    ['isolating', 'scheduled', 'cancelled'], // back to scheduled = rescheduled, notify again
+  isolating:   ['in_progress', 'restoring'],            // restoring from here = abort before work
+  in_progress: ['restoring'],
+  restoring:   ['resolved'],
+  resolved:    ['closed'],
+  closed:      [],
+  cancelled:   [],
+};
+
 export const LABELS = {
   scheduled: 'Scheduled', open: 'Open', dispatched: 'Dispatched',
   in_progress: 'In Progress', pending: 'Pending Verification',
   resolved: 'Resolved', closed: 'Closed', cancelled: 'Cancelled',
+  notified: 'Customers notified', isolating: 'Isolating', restoring: 'Restoring',
 };
 
-export function canTransition(from, to) {
-  return (TRANSITIONS[from] || []).includes(to);
+// Which table applies. `planned` means the incident has a planned_outages
+// row, not merely type 'Scheduled': incidents of that type created before
+// OMS-01 (by the generic form, as status 'open') stay on the fault table.
+export function transitionsFor(planned = false) {
+  return planned ? PLANNED_TRANSITIONS : TRANSITIONS;
 }
 
-export function nextStates(from) {
-  return TRANSITIONS[from] || [];
+// `planned` is optional: existing callers (fault incidents) are unchanged.
+export function canTransition(from, to, planned = false) {
+  return (transitionsFor(planned)[from] || []).includes(to);
+}
+
+export function nextStates(from, planned = false) {
+  return transitionsFor(planned)[from] || [];
 }
 
 // SCADA restoration (OMS-02): the tripped device reported closed again, so

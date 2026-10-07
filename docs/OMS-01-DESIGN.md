@@ -42,6 +42,10 @@ has to work around; they are not fixed by OMS-01 unless the reviewer says so.
 | Crew app `offlineQueue.js` | See §8. The race described in the brief has been **narrowed but not eliminated** by uncommitted work from 2026-10-07. OMS-01 does not use this queue either way. |
 | `src/lib/locationQueue.js` | Uses **expo-sqlite** with transactions and client-generated ids acknowledged by the server — the right model for switching confirmations (§7.4). |
 | `mobile-native-fixed/` | Stale duplicate. Not touched. |
+| ⚠ `realtime/restoration.js` (found in Phase 2) | On every `INCIDENT_UPDATED` → `resolved` it sends the DMS a **switch CLOSE** command, unless `restored_by === 'SCADA'`. For a planned outage the restore is done by the switching plan, so an automatic CLOSE would be wrong. Phase 2 sets `restored_by: 'SWITCHING_PLAN'`; **Phase 3 adds the skip** (same shape as the SCADA one) before any route publishes a planned `resolved`. |
+| ⚠ SCADA trips during planned work (found in Phase 2) | Opening a substation breaker as an isolate step will look to `realtime/scada.js` like a trip: it would raise a fault incident or merge into a nearby active one, and a later CLOSE could "SCADA-restore" it. `canScadaRestore` includes `in_progress`. Phase 3 must keep SCADA away from planned incidents (no merge, no SCADA restore) and decide how a trip on a device in an active isolate step is shown (Q8). |
+| ⚠ `PATCH /mobile/jobs/:id/status` | Sets the incident to `in_progress` on "On Site" and `pending` on "Work Complete". For a planned outage that would corrupt its state. Phase 3: for planned jobs, update the job only; the incident moves only via the plan/permits. |
+| `db/reset-demo.sql` | Deletes every job and bulk-closes incidents by direct UPDATE. Hence `work_permits.job_id` has no FK, and `safety_log` blocks TRUNCATE. |
 
 ---
 
@@ -181,6 +185,11 @@ without a database.
 
 Fault incidents keep `TRANSITIONS` **byte-for-byte unchanged**. Planned
 outages get a separate table, selected by type:
+
+As built in Phase 2, the table is chosen by whether the incident has a
+`planned_outages` row (`canTransition(from, to, planned)`), not by
+`type === 'Scheduled'`: older 'Scheduled' incidents created as `open` stay on
+the fault table.
 
 ```js
 export const PLANNED_TRANSITIONS = {
@@ -526,6 +535,9 @@ whatever `DATABASE_URL` points at):
    `network_topology_schema.sql` (empty tables are enough for the manual-plan
    path and for tests with fixtures)?
 7. **Permit number format** — confirm `PTW-YYYY-NNNNNN` or UPCL's own.
+8. **SCADA events on planned isolation devices.** When a breaker in an active
+   isolate step reports open, show it as "expected (planned)" on the outage,
+   or suppress it? It must not create or merge into a fault incident either way.
 
 ---
 

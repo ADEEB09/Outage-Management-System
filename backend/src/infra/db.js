@@ -276,6 +276,127 @@ export async function migrate() {
     DROP INDEX IF EXISTS crew_locations_crew_id_idx; -- duplicate of crew_locations_crew_time_idx
   `);
 
+  // OMS-01 planned outages: switching plans, work permits and the safety log.
+  // See docs/OMS-01-DESIGN.md §2. A planned outage is an incident (type
+  // 'Scheduled') plus a planned_outages row; crew work on it is an ordinary
+  // job. work_permits.job_id has no FK on purpose: db/reset-demo.sql deletes
+  // every job, and a permit is a safety record that must outlive it.
+  await db.none(`
+    CREATE TABLE IF NOT EXISTS planned_outages (
+      id                  TEXT PRIMARY KEY,
+      incident_id         TEXT UNIQUE NOT NULL REFERENCES incidents(id),
+      window_start        TIMESTAMPTZ NOT NULL,
+      window_end          TIMESTAMPTZ NOT NULL,
+      work_description    TEXT NOT NULL,
+      work_mrid           TEXT,
+      notice_lead_minutes INTEGER NOT NULL DEFAULT 1440,
+      notice_due_at       TIMESTAMPTZ,
+      notice_sent_at      TIMESTAMPTZ,
+      notice_skipped_reason TEXT,
+      created_by          TEXT NOT NULL,
+      created_at          TIMESTAMPTZ NOT NULL,
+      CHECK (window_end > window_start)
+    );
+
+    CREATE TABLE IF NOT EXISTS switching_plans (
+      id                TEXT PRIMARY KEY,
+      planned_outage_id TEXT UNIQUE NOT NULL REFERENCES planned_outages(id),
+      state             TEXT NOT NULL DEFAULT 'draft' CHECK (state IN ('draft', 'approved')),
+      source            TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'trace')),
+      trace_caveat      TEXT,
+      approved_by       TEXT,
+      approved_at       TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS switching_steps (
+      id               TEXT PRIMARY KEY,
+      plan_id          TEXT NOT NULL REFERENCES switching_plans(id),
+      phase            TEXT NOT NULL CHECK (phase IN ('isolate', 'restore')),
+      seq              INTEGER NOT NULL CHECK (seq > 0),
+      action           TEXT NOT NULL,
+      device_mrid      TEXT,
+      device_label     TEXT NOT NULL,
+      location         TEXT NOT NULL,
+      assignee         TEXT NOT NULL CHECK (assignee IN ('control_room', 'crew')),
+      assignee_crew_id TEXT,
+      state            TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'confirmed')),
+      confirmed_by     TEXT,
+      performed_at     TIMESTAMPTZ,
+      received_at      TIMESTAMPTZ,
+      client_confirmation_id TEXT UNIQUE,
+      on_behalf_note   TEXT,
+      lat              DOUBLE PRECISION,
+      lon              DOUBLE PRECISION,
+      UNIQUE (plan_id, phase, seq),
+      CHECK (assignee = 'control_room' OR assignee_crew_id IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS switching_steps_plan_idx ON switching_steps(plan_id, phase, seq);
+
+    CREATE SEQUENCE IF NOT EXISTS permit_no_seq AS bigint MINVALUE 1;
+    CREATE TABLE IF NOT EXISTS work_permits (
+      id                TEXT PRIMARY KEY,
+      permit_no         TEXT UNIQUE NOT NULL,
+      planned_outage_id TEXT NOT NULL REFERENCES planned_outages(id),
+      job_id            TEXT NOT NULL,
+      crew_id           TEXT NOT NULL,
+      state             TEXT NOT NULL CHECK (state IN ('requested', 'issued', 'returned', 'refused', 'withdrawn')),
+      requested_by      TEXT NOT NULL,
+      requested_at      TIMESTAMPTZ NOT NULL,
+      request_client_id TEXT UNIQUE NOT NULL,
+      issued_by         TEXT,
+      issued_at         TIMESTAMPTZ,
+      isolation_points  TEXT,
+      earthing_points   TEXT,
+      returned_by       TEXT,
+      returned_at       TIMESTAMPTZ,
+      return_client_id  TEXT UNIQUE,
+      return_declaration JSONB,
+      on_behalf_note    TEXT,
+      closed_by         TEXT,
+      closed_at         TIMESTAMPTZ,
+      refusal_reason    TEXT
+    );
+    -- At most one permit requested or issued per job, enforced by the
+    -- database as well as by domain/plannedOutage.js.
+    CREATE UNIQUE INDEX IF NOT EXISTS work_permits_one_open_per_job
+      ON work_permits(job_id) WHERE state IN ('requested', 'issued');
+    CREATE INDEX IF NOT EXISTS work_permits_outage_idx ON work_permits(planned_outage_id);
+
+    -- The safety document: who did what to which permit / switching step,
+    -- when. No FK, so it outlives anything it refers to.
+    CREATE TABLE IF NOT EXISTS safety_log (
+      id                TEXT PRIMARY KEY,
+      ts                TIMESTAMPTZ NOT NULL DEFAULT now(),
+      occurred_at       TIMESTAMPTZ,
+      actor             TEXT NOT NULL,
+      actor_role        TEXT NOT NULL,
+      actor_crew_id     TEXT,
+      planned_outage_id TEXT NOT NULL,
+      entity            TEXT NOT NULL,
+      entity_id         TEXT NOT NULL,
+      action            TEXT NOT NULL,
+      from_state        TEXT,
+      to_state          TEXT,
+      details           JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS safety_log_outage_idx ON safety_log(planned_outage_id, ts);
+
+    -- Append-only, enforced in the database for every environment (unlike
+    -- audit_log's trigger, which lives in a manual migration). TRUNCATE is
+    -- blocked too, so a reset script can't wipe it by accident.
+    CREATE OR REPLACE FUNCTION prevent_safety_log_change() RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'safety_log records are permanent and cannot be modified or deleted';
+    END;
+    $$ LANGUAGE plpgsql;
+    DROP TRIGGER IF EXISTS trg_safety_log_immutable ON safety_log;
+    CREATE TRIGGER trg_safety_log_immutable BEFORE UPDATE OR DELETE ON safety_log
+      FOR EACH ROW EXECUTE FUNCTION prevent_safety_log_change();
+    DROP TRIGGER IF EXISTS trg_safety_log_no_truncate ON safety_log;
+    CREATE TRIGGER trg_safety_log_no_truncate BEFORE TRUNCATE ON safety_log
+      FOR EACH STATEMENT EXECUTE FUNCTION prevent_safety_log_change();
+  `);
+
   // ID sequences for incidents.id / complaints.qid. These replace the old
   // SELECT COUNT(*) minting in repo.js, which raced under concurrency and
   // crashed the process on the resulting duplicate-key error (P8.6).
