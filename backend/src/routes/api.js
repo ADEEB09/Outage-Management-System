@@ -16,6 +16,9 @@ import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
 import { traceSection } from '../domain/sectionalize.js';
 import { topologyGeoJSON } from '../domain/topology.js';
 import { decodePhotoDataUrl, compressPhoto } from '../domain/photos.js';
+import { CALL_CATEGORIES, CALL_SEVERITY, cleanSubstation, deriveCallState } from '../domain/callState.js';
+import { nanoid } from 'nanoid';
+import { substationForFeeder } from '../domain/prediction.js';
 
 export const api = Router();
 
@@ -153,7 +156,7 @@ api.patch('/incidents/:id/status', requireRole('oms_operator', 'system_admin'), 
   if (!canTransition(inc.status, to))
     return res.status(409).json({ error: `illegal transition ${inc.status} - ${to}`, allowed: nextStates(inc.status) });
   const patch = { status: to };
-  if (to === 'resolved') patch.ert = null;
+  if (to === 'resolved') { patch.ert = null; patch.resolved_at = new Date().toISOString(); } // SAIDI uses the real restoration time
   const updated = await repo.updateIncident(inc.id, patch);
   await repo.addIncidentEvent(inc.id, actor(req), 'status', `${LABELS[inc.status]} - ${LABELS[to]}${req.body?.note ? ' - ' + req.body.note : ''}`);
   await repo.audit(actor(req), 'incident.status', `${inc.id}:${to}`);
@@ -271,21 +274,44 @@ api.post('/dms/restore', async (req, res) => {
 // same auto-detection path the live DNP3/IEC-61968 adapter will use in
 // production. Publishes to the ALARM_RAISED topic; the SCADA consumer does the
 // rest (detect - dedup - classify - auto-create). INT-001.
-api.post('/scada/fault', async (req, res) => {
-  const { tag, condition = 'CRITICAL', limit_val = 'TRIP', customers, feeder, substation, lat, lon } = req.body || {};
+// Shared by /scada/fault (ingestion) and /scada/simulate (FAT/test hook).
+// event 'trip' (default) or 'reclose' (the same tag's device closed again).
+async function ingestScadaEvent(req, res, auditAction) {
+  const { tag, event = 'trip', customers, lat, lon, cim_mrid } = req.body || {};
+  let { feeder, substation } = req.body || {};
   if (!tag) return res.status(400).json({ error: 'tag is required' });
+  if (!['trip', 'reclose'].includes(event)) return res.status(400).json({ error: "event must be 'trip' or 'reclose'" });
+  const reclose = event === 'reclose';
+  const condition = req.body?.condition || (reclose ? 'NORMAL' : 'CRITICAL');
+  const limit_val = req.body?.limit_val || (reclose ? 'CLOSED' : 'TRIP');
+  // A network.json feeder code without a substation: fill in the substation's
+  // full name (the incidents.substation format) so dedup and grouping line up.
+  if (feeder && !substation && typeof lat !== 'number') substation = substationForFeeder(feeder) || undefined;
   const evt = {
     id: 'ALM-' + Math.random().toString(36).slice(2, 7),
-    tag, condition, limit_val,
-    priority: condition === 'CRITICAL' ? 1 : condition === 'MAJOR' ? 2 : 3,
-    customers, feeder, substation, lat, lon,
-    message: `${condition} injected on ${tag}`,
+    tag, event, condition, limit_val,
+    priority: reclose ? 3 : condition === 'CRITICAL' ? 1 : condition === 'MAJOR' ? 2 : 3,
+    customers, feeder, substation, lat, lon, cim_mrid,
+    message: reclose ? `${tag} reclosed` : `${condition} injected on ${tag}`,
     ts: new Date().toISOString(), ack: 0,
   };
-  await repo.createAlarm({ id: evt.id, tag: evt.tag, condition: evt.condition, limit_val: evt.limit_val, priority: evt.priority, message: evt.message, ts: evt.ts, ack: 0 });
+  await repo.createAlarm({ id: evt.id, tag: evt.tag, condition: evt.condition, limit_val: evt.limit_val, priority: evt.priority, message: evt.message, ts: evt.ts, ack: reclose ? 1 : 0 });
   bus.publish(TOPICS.ALARM_RAISED, evt);
-  await repo.audit(actor(req), 'scada.fault.inject', tag);
+  await repo.audit(actor(req), auditAction, `${tag}:${event}`);
   res.status(202).json({ accepted: true, event: evt });
+}
+
+// Ingestion route (stand-in for a live SCADA feed). Behaviour change: was open
+// to any signed-in user, now SCADA operators and admins only.
+api.post('/scada/fault', requireRole('scada_operator', 'system_admin'), (req, res) => ingestScadaEvent(req, res, 'scada.fault.inject'));
+
+// FAT/test hook: trip or reclose a device without a real RTU. Admin only, and
+// only when ENABLE_SCADA_SIMULATION=true (off by default; never set it in production).
+api.post('/scada/simulate', requireRole('system_admin'), (req, res) => {
+  if (process.env.ENABLE_SCADA_SIMULATION !== 'true') {
+    return res.status(403).json({ error: 'SCADA simulation is disabled. Set ENABLE_SCADA_SIMULATION=true on the backend to enable it (test/FAT environments only).' });
+  }
+  return ingestScadaEvent(req, res, 'scada.simulate');
 });
 
 api.post('/alarms/ack-all', async (req, res) => {
@@ -300,19 +326,67 @@ api.post('/alarms/ack-all', async (req, res) => {
 });
 
 // ---------- trouble calls ----------
-api.get('/calls', async (req, res) => res.json(await repo.calls()));
+const CALL_ROLES = ['call_centre_attendant', 'oms_operator', 'system_admin'];
 
-api.post('/calls/:id/to-incident', async (req, res) => {
+// Areas of Responsibility = substations. `value` is the exact string stored in
+// incidents.substation (geo.resolve writes the same name), `label` is for display.
+api.get('/calls/areas', (req, res) =>
+  res.json(netSubstations.map((s) => ({ value: s.name, label: cleanSubstation(s.name) }))));
+
+api.get('/calls', async (req, res) => {
+  const [calls, incidents, callbacks] = await Promise.all([repo.calls(), repo.incidents(), repo.callbacks()]);
+  const byId = new Map(incidents.map((i) => [i.id, i]));
+  const sentAt = new Map(callbacks.filter((n) => ['logged', 'sent'].includes(n.status)).map((n) => [n.contact_ref, n.ts]));
+  res.json(calls.map((c) => {
+    const inc = c.linked_id ? byId.get(c.linked_id) : null;
+    const { state, reason } = deriveCallState(c, inc);
+    return { ...c, state, state_reason: reason, incident_status: inc ? inc.status : null, crew_id: inc ? inc.crew_id : null, callback_at: sentAt.get(c.id) || null };
+  }));
+});
+
+api.post('/calls', requireRole(...CALL_ROLES), async (req, res) => {
+  const b = req.body || {};
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const customer = str(b.customer), phone = str(b.phone), address = str(b.address), category = str(b.category);
+  if (!customer || !phone || !address || !category) return res.status(400).json({ error: 'customer, phone, address and category are required' });
+  if (!CALL_CATEGORIES.includes(category)) return res.status(400).json({ error: `category must be one of ${CALL_CATEGORIES.join(', ')}` });
+  const area = str(b.area) || null;
+  if (area && !netSubstations.some((s) => s.name === area)) return res.status(400).json({ error: 'unknown area' });
+  const call = await repo.createCall({
+    id: 'CALL-' + nanoid(5), customer, phone, address, category, status: 'unassigned',
+    linked_id: null, ts: new Date().toISOString(), area,
+  });
+  await repo.audit(actor(req), 'call.create', call.id);
+  bus.publish(TOPICS.CALL_RECEIVED, call);
+  res.status(201).json(call);
+});
+
+api.post('/calls/:id/reject', requireRole(...CALL_ROLES), async (req, res) => {
+  const call = (await repo.calls()).find((c) => c.id === req.params.id);
+  if (!call) return res.status(404).json({ error: 'not found' });
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if (reason.length < 3 || reason.length > 500) return res.status(400).json({ error: 'reason is required (3-500 characters)' });
+  if (call.linked_id) return res.status(409).json({ error: 'call is already linked to an incident' });
+  if (call.status === 'rejected') return res.status(409).json({ error: 'call is already rejected' });
+  const updated = await repo.updateCall(call.id, {
+    status: 'rejected', reject_reason: reason, rejected_at: new Date().toISOString(), rejected_by: actor(req),
+  });
+  await repo.audit(actor(req), 'call.reject', call.id);
+  bus.publish(TOPICS.CALL_UPDATED, updated);
+  res.json(updated);
+});
+
+api.post('/calls/:id/to-incident', requireRole('oms_operator', 'system_admin'), async (req, res) => {
   const calls = await repo.calls();
   const call = calls.find(c => c.id === req.params.id);
   if (!call) return res.status(404).json({ error: 'not found' });
   const id = await repo.nextIncidentId();
   const opened = new Date().toISOString();
   const inc = await repo.createIncident({
-    id, type: 'Power Outage', severity: call.category === 'Critical' ? 'critical' : 'medium',
+    id, type: 'Power Outage', severity: CALL_SEVERITY[call.category] || 'medium',
     status: 'open', zone: call.address, feeder: null, customers: 1, cause: 'Customer reported',
     lat: null, lon: null, crew_id: null, opened_at: opened, ert: null,
-    sla_due_at: new Date(Date.now() + 180 * 60000).toISOString(), source: 'TCS',
+    sla_due_at: new Date(Date.now() + 180 * 60000).toISOString(), source: 'TCS', substation: call.area || null,
   });
   await repo.updateCall(call.id, { status: 'incident', linked_id: id });
   await repo.addIncidentEvent(id, actor(req), 'created', `From trouble call ${call.id} (${call.customer})`);

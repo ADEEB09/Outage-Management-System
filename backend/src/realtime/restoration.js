@@ -71,6 +71,9 @@ async function postWithRetry(command, attempt = 1) {
 }
 
 export async function publishRestoration(incident) {
+  // Restored by SCADA = the device itself reported closed, so the DMS already
+  // knows; commanding a CLOSE would be redundant (OMS-02).
+  if (incident.restored_by === 'SCADA') return { skipped: true, reason: 'restored by SCADA' };
   if (await alreadyPublished(incident.id)) return { skipped: true, reason: 'already published' };
   const command = buildCommand(incident);
   try {

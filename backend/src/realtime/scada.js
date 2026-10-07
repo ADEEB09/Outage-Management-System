@@ -2,7 +2,10 @@ import { nanoid } from 'nanoid';
 import { bus, TOPICS } from '../domain/bus.js';
 import { repo } from '../infra/repo.js';
 import { resolve as resolveAsset } from '../infra/geo.js';
-import { setTag } from '../infra/redis.js';
+import { setTag, cacheDel } from '../infra/redis.js';
+import { canScadaRestore, LABELS } from '../domain/lifecycle.js';
+import { predictDownstream } from '../domain/prediction.js';
+import { sendRestorationCallbacks } from './notifier.js';
 
 // ============================================================
 // Phase 2 ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â SCADA & DMS integration: fault-event ingest + auto-detection
@@ -131,6 +134,76 @@ async function corroborateFromCustomerReport(inc, evt, loc) {
   return true;
 }
 
+// ---- OMS-02: downstream prediction, trip tags, reclose ----
+
+// Record the trip's tag on the incident it created or was merged into, and
+// attach a downstream prediction if the incident doesn't have one yet.
+async function recordTrip(incidentId, evt, loc) {
+  if (evt.tag) await repo.addTripTag(incidentId, evt.tag);
+  const inc = await repo.incident(incidentId);
+  if (inc && !inc.prediction) {
+    const prediction = await predictDownstream({ feeder: loc.feeder, cim_mrid: evt.cim_mrid });
+    prediction.customers_source = typeof evt.customers === 'number' ? 'event' : 'estimated';
+    await repo.updateIncident(incidentId, { prediction });
+    await repo.addIncidentEvent(incidentId, 'SCADA', 'predicted', predictionNote(prediction));
+  }
+}
+
+function predictionNote(p) {
+  if (p.method === 'none') return `Downstream prediction unavailable: ${p.basis}`;
+  if (p.method === 'cim-trace') return `Predicted downstream: ${p.transformers} transformers (CIM trace) - ${p.basis}`;
+  return `Predicted downstream: ${p.transformers} transformers, ~${p.customers_estimate} customers (feeder-level, ${p.kva_total} kVA on ${p.feeder})`;
+}
+
+const momentaryMaxMin = () => Number(process.env.MOMENTARY_MAX_MIN) || 5;
+
+// The tripped device reported closed again. Remove its tag from every active
+// incident holding it; an incident is restored only once no tripped device
+// remains open on it.
+async function handleReclose(evt) {
+  if (!evt.tag) return { restored: [], pending: [] };
+  const touched = await repo.removeTripTag(evt.tag);
+  const restored = [], pending = [];
+  for (const inc of touched) {
+    const left = inc.open_trip_tags || [];
+    if (left.length) {
+      await repo.addIncidentEvent(inc.id, 'SCADA', 'field', `${evt.tag} reclosed; still open: ${left.join(', ')}`);
+      pending.push(inc.id);
+      continue;
+    }
+    const r = await restoreFromScada(inc, evt.tag);
+    if (r) restored.push(r);
+  }
+  return { restored, pending };
+}
+
+async function restoreFromScada(inc, tag) {
+  if (!canScadaRestore(inc.status)) return null;
+  const now = new Date();
+  const minutes = (now.getTime() - new Date(inc.opened_at).getTime()) / 60000;
+  const momentary = minutes <= momentaryMaxMin();
+
+  if (inc.crew_id) {
+    await repo.addIncidentEvent(inc.id, 'SCADA', 'restored',
+      `Restored by SCADA while crew ${inc.crew_id} assigned - confirm whether the crew is still needed`);
+  }
+  await repo.updateIncident(inc.id, { status: 'resolved', restored_by: 'SCADA', resolved_at: now.toISOString(), momentary, ert: null });
+  await repo.addIncidentEvent(inc.id, 'SCADA', 'status',
+    `${LABELS[inc.status]} - ${LABELS.resolved} - ${tag} reclosed after ${minutes.toFixed(1)} min (${momentary ? 'momentary' : 'sustained'})`);
+  if (momentary) {
+    await repo.updateIncident(inc.id, { status: 'closed' });
+    await repo.addIncidentEvent(inc.id, 'SCADA', 'status',
+      `${LABELS.resolved} - ${LABELS.closed} - auto-closed as momentary interruption (<= ${momentaryMaxMin()} min, counted in MAIFI)`);
+  }
+  await repo.audit('SCADA', momentary ? 'incident.momentary' : 'incident.scada_restored', inc.id);
+  await cacheDel('indicators'); // SAIDI/SAIFI/MAIFI change now, not after the 15 s cache TTL
+  const final = await repo.incident(inc.id);
+  await sendRestorationCallbacks(final);
+  // Published once, after the final status, so status-driven listeners fire once.
+  bus.publish(TOPICS.INCIDENT_UPDATED, final);
+  return { incidentId: inc.id, momentary, status: final.status };
+}
+
 export async function handleScadaEvent(evt) {
   try {
     // Always push the raw value into the RTDB tag cache first -- even non-outage
@@ -139,6 +212,8 @@ export async function handleScadaEvent(evt) {
     if (evt.tag) {
       await setTag(evt.tag, evt.limit_val ?? evt.value ?? evt.condition, evt.quality || 'GOOD');
     }
+
+    if (evt.event === 'reclose') return { reclose: true, ...(await handleReclose(evt)) };
 
     if (!isOutageCondition(evt.condition)) return null; // recorded, not an outage
 
@@ -160,6 +235,7 @@ export async function handleScadaEvent(evt) {
           `Correlated SCADA ${evt.condition} on ${evt.tag || key} (deduplicated)`);
       }
       if (evt.id) await repo.updateAlarm(evt.id, { incident_id: recent.incidentId }).catch(() => {});
+      await recordTrip(recent.incidentId, evt, loc);
       recentByAsset.set(key, { incidentId: recent.incidentId, ts: now });
       return { deduplicated: true, incidentId: recent.incidentId };
     }
@@ -176,6 +252,7 @@ export async function handleScadaEvent(evt) {
             `Correlated SCADA ${evt.condition} on ${evt.tag || key} (deduplicated)`);
         }
         if (evt.id) await repo.updateAlarm(evt.id, { incident_id: inc.id }).catch(() => {});
+        await recordTrip(inc.id, evt, loc);
         recentByAsset.set(key, { incidentId: inc.id, ts: now });
         return { deduplicated: true, incidentId: inc.id };
       }
@@ -185,10 +262,18 @@ export async function handleScadaEvent(evt) {
     const customers = estimateCustomers(evt, loc);
     const severity = classifySeverity(evt.condition, customers);
 
+    // --- downstream prediction (OMS-02) ---
+    // A real customer count on the event always wins; otherwise the incident
+    // carries the prediction's kVA-share estimate. Severity above is unchanged.
+    const prediction = await predictDownstream({ feeder: loc.feeder, cim_mrid: evt.cim_mrid });
+    const hasRealCount = typeof evt.customers === 'number';
+    prediction.customers_source = hasRealCount ? 'event' : 'estimated';
+    const incCustomers = hasRealCount || prediction.customers_estimate == null ? customers : prediction.customers_estimate;
+
     // --- auto-create the incident (FR-OMS-001) ---
     const id = await repo.nextIncidentId();
     const openedAt = new Date().toISOString();
-    const inc = await repo.createIncident({
+    const created = await repo.createIncident({
       id,
       type: 'outage',
       severity,
@@ -196,7 +281,7 @@ export async function handleScadaEvent(evt) {
       zone: loc.substation || null,
       feeder: loc.feeder || null,
       substation: loc.substation || null,
-      customers,
+      customers: incCustomers,
       cause: `SCADA ${evt.condition} on ${evt.tag || key}`,
       lat: loc.lat,
       lon: loc.lon,
@@ -207,9 +292,13 @@ export async function handleScadaEvent(evt) {
       source: 'SCADA',
     });
     await repo.addIncidentEvent(id, 'SCADA', 'created',
-      `Auto-detected from SCADA ${evt.condition} on ${evt.tag || key} - ${severity} severity, ~${customers} customers`);
+      `Auto-detected from SCADA ${evt.condition} on ${evt.tag || key} - ${severity} severity, ~${incCustomers} customers`);
     await repo.audit('SCADA', 'incident.autodetect', id);
     if (evt.id) await repo.updateAlarm(evt.id, { incident_id: id }).catch(() => {});
+    if (evt.tag) await repo.addTripTag(id, evt.tag);
+    await repo.updateIncident(id, { prediction });
+    await repo.addIncidentEvent(id, 'SCADA', 'predicted', predictionNote(prediction));
+    const inc = await repo.incident(id) || created;
 
     recentByAsset.set(key, { incidentId: id, ts: now });
     bus.publish(TOPICS.INCIDENT_CREATED, inc);

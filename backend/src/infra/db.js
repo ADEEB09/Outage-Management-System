@@ -207,6 +207,18 @@ export async function migrate() {
   `);
   await db.none(`
     ALTER TABLE alarms    ADD COLUMN IF NOT EXISTS incident_id TEXT REFERENCES incidents(id);
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS area TEXT;
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS reject_reason TEXT;
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ;
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS rejected_by TEXT;
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS prediction JSONB;
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS trip_tag TEXT;
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS open_trip_tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS momentary BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS restored_by TEXT;
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS contact_ref TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS notifications_callback_once ON notifications (incident_id, contact_ref) WHERE contact_ref IS NOT NULL;
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_state TEXT;
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_reason TEXT;
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_changed_at TIMESTAMPTZ;

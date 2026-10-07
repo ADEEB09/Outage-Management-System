@@ -2,6 +2,7 @@ import { repo } from '../infra/repo.js';
 import { bus, TOPICS } from '../domain/bus.js';
 import { nanoid } from 'nanoid';
 import { substations as netSubstations } from '../infra/geo.js';
+import { CALL_CATEGORIES } from '../domain/callState.js';
 
 // Stands in for the SCADA/DMS field-event stream (SDP FEP ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Kafka).
 // Drives the "live" feel: crew GPS drift, occasional alarms and trouble calls.
@@ -50,8 +51,9 @@ export function startSimulator() {
         id: 'CALL-' + nanoid(5), customer: NAMES[Math.floor(Math.random() * NAMES.length)],
         phone: '98' + Math.floor(10000000 + Math.random() * 89999999),
         address: ADDR[Math.floor(Math.random() * ADDR.length)],
-        category: Math.random() > 0.8 ? 'Medical' : 'Normal', status: 'unassigned',
+        category: CALL_CATEGORIES[Math.floor(Math.random() * CALL_CATEGORIES.length)], status: 'unassigned',
         linked_id: null, ts: new Date().toISOString(),
+        area: netSubstations.length ? netSubstations[Math.floor(Math.random() * netSubstations.length)].name : null,
       });
       bus.publish(TOPICS.CALL_RECEIVED, c);
     } catch (e) { console.error('[simulator] trouble call error', e); }

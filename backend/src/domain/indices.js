@@ -2,8 +2,11 @@
 // SAIFI = total customers interrupted / customers served
 // SAIDI = total customer-interruption-minutes / customers served
 // CAIDI = SAIDI / SAIFI  = average outage duration per interrupted customer (minutes)
-// MAIFI = momentary interruptions / customers served
-const CUSTOMERS_SERVED = 18500; // UPCL Ganga corridor served base (config in prod)
+// MAIFI = total customer momentary interruptions / customers served
+// Momentary = restored within MOMENTARY_MAX_MIN (incidents.momentary); those
+// count only in MAIFI, never in SAIFI/SAIDI/CAIDI.
+// UPCL Ganga corridor served base; CUSTOMERS_SERVED env overrides (default 18500).
+export const customersServed = () => Number(process.env.CUSTOMERS_SERVED) || 18500;
 
 // P7.2 requires filtering "by date, zone and asset type." The incidents
 // table doesn't track a distinct asset-type field (transformer/feeder/
@@ -34,42 +37,45 @@ export function filterIncidents(incidents, filters = {}) {
 }
 
 export function computeIndices(incidents, filters = {}) {
+  const served = customersServed();
   const scoped = filterIncidents(incidents, filters);
-  const interrupting = scoped.filter((i) => i.type !== 'Scheduled' && i.severity !== 'low');
+  const interrupting = scoped.filter((i) => i.type !== 'Scheduled' && i.severity !== 'low' && !i.momentary);
+  const momentaryEvents = scoped.filter((i) => i.momentary);
   const custInterrupted = interrupting.reduce((s, i) => s + (i.customers || 0), 0);
+  const custMomentary = momentaryEvents.reduce((s, i) => s + (i.customers || 0), 0);
 
   const now = Date.now();
   const custMinutes = interrupting.reduce((s, i) => {
     const opened = new Date(i.opened_at).getTime();
-    // resolved/closed — count actual restoration window; active — cap accrual at 90 min
-    // so an in-flight incident doesn't inflate CAIDI unboundedly in the live demo.
-    const elapsed = (now - opened) / 60000;
-    const dur = ['resolved', 'closed'].includes(i.status) ? Math.min(elapsed, 90) : Math.min(elapsed, 90);
+    // With a real restoration time (resolved_at, set by the operator resolve
+    // or by SCADA), use the actual outage duration, uncapped. Without one
+    // (older rows, or still active), keep the previous rule: accrue up to 90
+    // min so an in-flight incident doesn't inflate CAIDI unboundedly in the live demo.
+    const dur = i.resolved_at
+      ? (new Date(i.resolved_at).getTime() - opened) / 60000
+      : Math.min((now - opened) / 60000, 90);
     return s + Math.max(0, dur) * (i.customers || 0);
   }, 0);
 
-  const saifi = custInterrupted / CUSTOMERS_SERVED;
-  const saidi = custMinutes / CUSTOMERS_SERVED;
+  const saifi = custInterrupted / served;
+  const saidi = custMinutes / served;
   // CAIDI is average restoration time per interrupted customer — independent of served base
   const caidi = custInterrupted ? custMinutes / custInterrupted : 0;
-  // MAIFI: still a fixed placeholder, unchanged from the original
-  // calculation — flagging rather than quietly leaving it unexplained,
-  // since a real regulatory export implies every number on it is real.
-  // Computing a genuine MAIFI needs momentary-interruption events (breaker
-  // auto-reclose within <5 min per the SDP's own definition), which isn't
-  // tracked as a distinct event type in the current incidents schema.
-  const maifi = 0.12;
+  // MAIFI (IEEE 1366): customers momentarily interrupted / customers served.
+  const maifi = custMomentary / served;
 
   return {
     saidi: +saidi.toFixed(2),
     saifi: +saifi.toFixed(3),
     caidi: +caidi.toFixed(1),
-    maifi,
+    maifi: +maifi.toFixed(3),
     saidiTarget: 5.0,
     saifiTarget: 1.2,
-    customersServed: CUSTOMERS_SERVED,
+    customersServed: served,
     customersAffected: custInterrupted,
+    customersMomentary: custMomentary,
     incidentCount: interrupting.length,
+    momentaryCount: momentaryEvents.length,
     filters: {
       from: filters.from || null,
       to: filters.to || null,

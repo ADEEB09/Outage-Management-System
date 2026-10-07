@@ -58,6 +58,21 @@ export const repo = {
     await db.none(`UPDATE incidents SET ${setClause(patch)} WHERE id=$/id/`, { ...patch, id });
     return repo.incident(id);
   },
+  // SCADA trip tags still open on an incident (OMS-02). Atomic jsonb ops so
+  // two concurrent events can't lose each other's tag.
+  addTripTag: async (id, tag) => {
+    await db.none(
+      `UPDATE incidents SET
+         open_trip_tags = CASE WHEN open_trip_tags ? $/tag/ THEN open_trip_tags ELSE open_trip_tags || to_jsonb($/tag/::text) END,
+         trip_tag = COALESCE(trip_tag, $/tag/)
+       WHERE id=$/id/`, { id, tag });
+    return repo.incident(id);
+  },
+  // Removes the tag from every active incident holding it; returns those incidents after removal.
+  removeTripTag: (tag) => db.any(
+    `UPDATE incidents SET open_trip_tags = open_trip_tags - $/tag/
+     WHERE open_trip_tags ? $/tag/ AND status NOT IN ('resolved','closed','cancelled')
+     RETURNING *`, { tag }),
   addIncidentEvent: async (incidentId, actor, kind, note) => {
     const ev = { id: 'EV' + nanoid(8), incident_id: incidentId, ts: new Date().toISOString(), actor, kind, note };
     await db.none(`INSERT INTO incident_events (id,incident_id,ts,actor,kind,note)
@@ -193,8 +208,8 @@ export const repo = {
   // ---- trouble calls
   calls: () => db.any('SELECT * FROM trouble_calls ORDER BY ts DESC'),
   createCall: async (c) => {
-    await db.none(`INSERT INTO trouble_calls (id,customer,phone,address,category,status,linked_id,ts)
-      VALUES ($/id/,$/customer/,$/phone/,$/address/,$/category/,$/status/,$/linked_id/,$/ts/)`, c);
+    await db.none(`INSERT INTO trouble_calls (id,customer,phone,address,category,status,linked_id,ts,area)
+      VALUES ($/id/,$/customer/,$/phone/,$/address/,$/category/,$/status/,$/linked_id/,$/ts/,$/area/)`, { area: null, ...c });
     return db.oneOrNone('SELECT * FROM trouble_calls WHERE id=$1', [c.id]);
   },
   updateCall: async (id, patch) => {
@@ -319,9 +334,17 @@ export const repo = {
   clearOptOut: (recipient, channel) =>
     db.none('DELETE FROM opt_outs WHERE recipient=$1 AND channel=$2', [recipient, channel]),
   isOptedOut: async (recipient, channel) => {
-    const row = await db.oneOrNone('SELECT 1 FROM opt_outs WHERE recipient=$1 AND channel=$2', [recipient, channel]);
+    // LIMIT 1: opting out twice inserts two rows, which made oneOrNone throw.
+    const row = await db.oneOrNone('SELECT 1 FROM opt_outs WHERE recipient=$1 AND channel=$2 LIMIT 1', [recipient, channel]);
     return !!row;
   },
+  callsForIncident: (incidentId) => db.any('SELECT * FROM trouble_calls WHERE linked_id=$1 ORDER BY ts ASC', [incidentId]),
+  // Restoration callbacks (notifications.contact_ref = call id / complaint qid). Earliest per contact.
+  callbacks: () => db.any(
+    `SELECT DISTINCT ON (contact_ref) contact_ref, incident_id, status, ts
+     FROM notifications WHERE contact_ref IS NOT NULL ORDER BY contact_ref, ts ASC`),
+  callbacksForIncident: (incidentId) => db.any(
+    'SELECT * FROM notifications WHERE incident_id=$1 AND contact_ref IS NOT NULL ORDER BY ts ASC', [incidentId]),
   saveMonthlySnapshot: async (monthKey, indices) => {
     await db.none(`
       INSERT INTO monthly_indices (month_key, saidi, saifi, caidi, maifi, computed_at)

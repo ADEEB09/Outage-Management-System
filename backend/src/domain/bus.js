@@ -18,6 +18,7 @@ export const TOPICS = {
   ALARM_RAISED: 'scada.alarm.raised',
   ALARM_ACKED: 'scada.alarm.acked',
   CALL_RECEIVED: 'tcs.call.received',
+  CALL_UPDATED: 'tcs.call.updated',
   CREW_UPDATED: 'crew.updated',
   JOB_UPDATED: 'crew.job.updated',
   INDICES_UPDATED: 'oms.indices.updated',
