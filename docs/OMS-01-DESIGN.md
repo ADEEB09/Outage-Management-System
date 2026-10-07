@@ -1,8 +1,8 @@
-# OMS-01 Outage Scheduling — Design (Phase 1)
+# OMS-01 Outage Scheduling — Design
 
-Status: **draft for review**. No code has been written for OMS-01. This document
-is the contract Phases 2–6 implement; anything not written here is out of scope
-until it is added here.
+Status: **implemented (Phases 1–6)**, see §13 for what was built, the defaults
+taken for the open questions, and how to test it. The sections below are the
+design it was built to.
 
 Planned outage = supply switched off on purpose so a crew can work. OMS-01
 covers four things, in this order of importance:
@@ -548,3 +548,62 @@ whatever `DATABASE_URL` points at):
   (tracking alerts, Pending Sync changes, test-jobs script). It should be
   committed on its own branch first, so OMS-01 diffs contain only OMS-01.
 - `mobile-native-fixed/` is not touched.
+
+---
+
+## 13. As built (Phases 2–6)
+
+### Open questions: defaults taken
+
+The owner asked for the work to proceed with safe defaults; each is easy to
+change later.
+
+| Q | Default implemented |
+|---|---|
+| 1 Notice audience / lead time | Single `NOTIFY_TEST_TO` recipient (no customer data exists); lead time per outage, default 24 h. |
+| 2 On-behalf records | Allowed for the control room, **only** with a free-text note of who reported it; stored on the step/permit and in the safety log. Crew steps and permit returns are otherwise the crew's own. |
+| 3 Crews per outage | One sequential plan; several permits can exist over time, at most one open per job (DB-enforced). |
+| 4 Earthing | Plan steps (`earth_apply` / `earth_remove`) with free-text device/location. |
+| 5 Fault-path problems (lifecycle bypass, x-user, job ownership) | **Not changed** for fault jobs; OMS-01 routes use the verified token and check ownership. |
+| 6 Network schema in migrate() | Not added. Draft-from-trace answers `409 NETWORK_UNAVAILABLE`; plans are built by hand. |
+| 7 Permit number | `PTW-YYYY-NNNNNN` from `permit_no_seq`. |
+| 8 SCADA on planned isolation devices | Never merged into, never restores, a planned outage. A trip at a substation with active planned switching still **raises its own incident** (a real fault is never hidden), with a note on both timelines. |
+
+### Where things are
+
+| Layer | Files |
+|---|---|
+| Rules (no SQL) | `backend/src/domain/plannedOutage.js`, `switchingPlan.js`, `clientTime.js`, `lifecycle.js` (`PLANNED_TRANSITIONS`) |
+| Data | `backend/src/infra/db.js` (tables, triggers), `repo.js` (`withOutage` transaction + functions) |
+| API | `backend/src/routes/plannedOutages.js` (mounted first in `api.js`) |
+| Guards on existing code | `realtime/scada.js`, `realtime/restoration.js`, `realtime/notifier.js`, `repo.activeIncidentsAtSubstation` |
+| Notices | `backend/src/realtime/plannedNotices.js` |
+| Control room | `frontend/src/screens/PlannedOutages.jsx`, `lib/plannedApi.js` |
+| Crew app | `src/components/PlannedOutagePanel.js`, `src/lib/safetyStore.js`, `src/lib/plannedOutage.js`, gates in `src/NativeApp.jsx` (`requestAdvance`, `handleAdvance`) |
+| Tests | `backend/src/selftest-oms01.js` (`npm run test:oms01`; also in `npm test` and CI) |
+
+### How to test
+
+1. **Automated**: `cd backend && DATABASE_URL=<scratch db> npm run test:oms01`
+   (76 checks). `npm test` runs it after the existing self-test. Use a scratch
+   database: both suites write data.
+2. **Control room**: Planned outages → New → fill zone, window, work →
+   build the plan (isolate: control-room OPEN breaker, crew earth; restore in
+   reverse) → Save → Approve → Send notice → Assign crew → Confirm done on
+   step 1.
+3. **Crew app** (signed in as the assigned crew): open the job → complete the
+   priority checklist → the Planned outage panel lists every step. Confirm
+   your isolation step → Request work permit ("waiting for control room").
+   Try **Work Started** first: it is refused until the permit is issued.
+4. **Control room**: Permits → Issue. Crew: Work Started now works. Try
+   **Work Finished**: refused until the permit is returned. Return it with the
+   three switches on.
+5. **Restore**: crew removes the earth; control room confirms the breaker
+   CLOSE → status Resolved (no DMS command is sent) → Close work order.
+6. **Offline**: on the phone, turn on Airplane mode and confirm your next
+   step: it shows **NOT SENT** in red, nothing else unlocks, and the control
+   room still shows it pending. Airplane mode off: within ~10 s it turns
+   green on both sides, with the time you actually did it.
+7. **Order enforcement**: try confirming a later step from the API or a
+   second session: `409 PREDECESSOR_UNCONFIRMED`, shown in red in the
+   control room's live tape and safety log.
