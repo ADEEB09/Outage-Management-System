@@ -196,6 +196,25 @@ export class Dnp3Master extends EventEmitter {
       // logic do the rest. No changes needed there for this new source.
       bus.publish(TOPICS.ALARM_RAISED, evt);
       this.emit('trip', evt);
+    } else if (!point.state && point.online) {
+      // Same point back to state=false while online: the breaker/switch has
+      // closed again. scada.js treats event 'reclose' as a restoration of the
+      // incident(s) still holding this tag (OMS-02).
+      const evt = {
+        id: 'ALM-DNP3-' + Math.random().toString(36).slice(2, 7),
+        tag: mapping.tag,
+        event: 'reclose',
+        condition: 'NORMAL',
+        limit_val: 'CLOSED',
+        priority: 3,
+        substation: this.substation,
+        feeder: this.feeder,
+        message: `DNP3 binary input reclose: ${mapping.description}`,
+        ts: new Date().toISOString(),
+        ack: 0,
+      };
+      bus.publish(TOPICS.ALARM_RAISED, evt);
+      this.emit('reclose', evt);
     }
   }
 
@@ -235,6 +254,10 @@ export class Dnp3TestOutstation extends EventEmitter {
   // under fault.
   triggerTrip(index) {
     this.pendingPoints = [{ index, online: true, state: true }];
+  }
+  // ...and the same point closing again (auto-reclose / manual close).
+  triggerReclose(index) {
+    this.pendingPoints = [{ index, online: true, state: false }];
   }
   _respond() {
     if (!this.pendingPoints.length || !this.socket) return;

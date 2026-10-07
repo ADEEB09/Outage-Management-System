@@ -18,6 +18,7 @@ import { topologyGeoJSON } from '../domain/topology.js';
 import { decodePhotoDataUrl, compressPhoto } from '../domain/photos.js';
 import { CALL_CATEGORIES, CALL_SEVERITY, cleanSubstation, deriveCallState } from '../domain/callState.js';
 import { nanoid } from 'nanoid';
+import { substationForFeeder } from '../domain/prediction.js';
 
 export const api = Router();
 
@@ -155,7 +156,7 @@ api.patch('/incidents/:id/status', requireRole('oms_operator', 'system_admin'), 
   if (!canTransition(inc.status, to))
     return res.status(409).json({ error: `illegal transition ${inc.status} - ${to}`, allowed: nextStates(inc.status) });
   const patch = { status: to };
-  if (to === 'resolved') patch.ert = null;
+  if (to === 'resolved') { patch.ert = null; patch.resolved_at = new Date().toISOString(); } // SAIDI uses the real restoration time
   const updated = await repo.updateIncident(inc.id, patch);
   await repo.addIncidentEvent(inc.id, actor(req), 'status', `${LABELS[inc.status]} - ${LABELS[to]}${req.body?.note ? ' - ' + req.body.note : ''}`);
   await repo.audit(actor(req), 'incident.status', `${inc.id}:${to}`);
@@ -273,21 +274,44 @@ api.post('/dms/restore', async (req, res) => {
 // same auto-detection path the live DNP3/IEC-61968 adapter will use in
 // production. Publishes to the ALARM_RAISED topic; the SCADA consumer does the
 // rest (detect - dedup - classify - auto-create). INT-001.
-api.post('/scada/fault', async (req, res) => {
-  const { tag, condition = 'CRITICAL', limit_val = 'TRIP', customers, feeder, substation, lat, lon } = req.body || {};
+// Shared by /scada/fault (ingestion) and /scada/simulate (FAT/test hook).
+// event 'trip' (default) or 'reclose' (the same tag's device closed again).
+async function ingestScadaEvent(req, res, auditAction) {
+  const { tag, event = 'trip', customers, lat, lon, cim_mrid } = req.body || {};
+  let { feeder, substation } = req.body || {};
   if (!tag) return res.status(400).json({ error: 'tag is required' });
+  if (!['trip', 'reclose'].includes(event)) return res.status(400).json({ error: "event must be 'trip' or 'reclose'" });
+  const reclose = event === 'reclose';
+  const condition = req.body?.condition || (reclose ? 'NORMAL' : 'CRITICAL');
+  const limit_val = req.body?.limit_val || (reclose ? 'CLOSED' : 'TRIP');
+  // A network.json feeder code without a substation: fill in the substation's
+  // full name (the incidents.substation format) so dedup and grouping line up.
+  if (feeder && !substation && typeof lat !== 'number') substation = substationForFeeder(feeder) || undefined;
   const evt = {
     id: 'ALM-' + Math.random().toString(36).slice(2, 7),
-    tag, condition, limit_val,
-    priority: condition === 'CRITICAL' ? 1 : condition === 'MAJOR' ? 2 : 3,
-    customers, feeder, substation, lat, lon,
-    message: `${condition} injected on ${tag}`,
+    tag, event, condition, limit_val,
+    priority: reclose ? 3 : condition === 'CRITICAL' ? 1 : condition === 'MAJOR' ? 2 : 3,
+    customers, feeder, substation, lat, lon, cim_mrid,
+    message: reclose ? `${tag} reclosed` : `${condition} injected on ${tag}`,
     ts: new Date().toISOString(), ack: 0,
   };
-  await repo.createAlarm({ id: evt.id, tag: evt.tag, condition: evt.condition, limit_val: evt.limit_val, priority: evt.priority, message: evt.message, ts: evt.ts, ack: 0 });
+  await repo.createAlarm({ id: evt.id, tag: evt.tag, condition: evt.condition, limit_val: evt.limit_val, priority: evt.priority, message: evt.message, ts: evt.ts, ack: reclose ? 1 : 0 });
   bus.publish(TOPICS.ALARM_RAISED, evt);
-  await repo.audit(actor(req), 'scada.fault.inject', tag);
+  await repo.audit(actor(req), auditAction, `${tag}:${event}`);
   res.status(202).json({ accepted: true, event: evt });
+}
+
+// Ingestion route (stand-in for a live SCADA feed). Behaviour change: was open
+// to any signed-in user, now SCADA operators and admins only.
+api.post('/scada/fault', requireRole('scada_operator', 'system_admin'), (req, res) => ingestScadaEvent(req, res, 'scada.fault.inject'));
+
+// FAT/test hook: trip or reclose a device without a real RTU. Admin only, and
+// only when ENABLE_SCADA_SIMULATION=true (off by default; never set it in production).
+api.post('/scada/simulate', requireRole('system_admin'), (req, res) => {
+  if (process.env.ENABLE_SCADA_SIMULATION !== 'true') {
+    return res.status(403).json({ error: 'SCADA simulation is disabled. Set ENABLE_SCADA_SIMULATION=true on the backend to enable it (test/FAT environments only).' });
+  }
+  return ingestScadaEvent(req, res, 'scada.simulate');
 });
 
 api.post('/alarms/ack-all', async (req, res) => {
@@ -310,12 +334,13 @@ api.get('/calls/areas', (req, res) =>
   res.json(netSubstations.map((s) => ({ value: s.name, label: cleanSubstation(s.name) }))));
 
 api.get('/calls', async (req, res) => {
-  const [calls, incidents] = await Promise.all([repo.calls(), repo.incidents()]);
+  const [calls, incidents, callbacks] = await Promise.all([repo.calls(), repo.incidents(), repo.callbacks()]);
   const byId = new Map(incidents.map((i) => [i.id, i]));
+  const sentAt = new Map(callbacks.filter((n) => ['logged', 'sent'].includes(n.status)).map((n) => [n.contact_ref, n.ts]));
   res.json(calls.map((c) => {
     const inc = c.linked_id ? byId.get(c.linked_id) : null;
     const { state, reason } = deriveCallState(c, inc);
-    return { ...c, state, state_reason: reason, incident_status: inc ? inc.status : null, crew_id: inc ? inc.crew_id : null };
+    return { ...c, state, state_reason: reason, incident_status: inc ? inc.status : null, crew_id: inc ? inc.crew_id : null, callback_at: sentAt.get(c.id) || null };
   }));
 });
 

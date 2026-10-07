@@ -68,7 +68,7 @@ export default function Incidents({ openId, focusIncidentId, clearFocus } = {}) 
                 <td className="mono" style={{ fontSize: 12 }}>{i.feeder || '-'}</td>
                 <td className="mono">{(i.customers || 0).toLocaleString()}</td>
                 <td className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>{timeAgo(i.opened_at)}</td>
-                <td><StatusBadge status={i.status} /></td>
+                <td><StatusBadge status={i.status} /><ScadaBadges inc={i} /></td>
               </tr>
             ))}
             {!rows.length && <tr><td colSpan={8}><div className="empty"><span className="disp">Nothing matches</span>Adjust the filters above.</div></td></tr>}
@@ -80,6 +80,22 @@ export default function Incidents({ openId, focusIncidentId, clearFocus } = {}) 
       {showNew && <NewIncident onClose={() => setShowNew(false)} onCreated={(i) => { setShowNew(false); load(); open(i); }} />}
     </>
   );
+}
+
+// OMS-02: SCADA restoration markers.
+function ScadaBadges({ inc }) {
+  return (
+    <>
+      {inc.momentary && <span className="chip chip-merged" style={{ marginLeft: 6 }}>Momentary</span>}
+      {inc.restored_by === 'SCADA' && <span className="chip chip-ok" style={{ marginLeft: 6 }}>Restored by SCADA</span>}
+    </>
+  );
+}
+
+function predictionText(p) {
+  if (p.method === 'none') return 'Not available - feeder not in network model';
+  if (p.method === 'cim-trace') return `${p.transformers} transformers (CIM trace)`;
+  return `${p.transformers} transformers, ~${(p.customers_estimate || 0).toLocaleString()} customers (feeder-level)`;
 }
 
 function IncidentDrawer({ inc, onClose, onChange }) {
@@ -115,7 +131,7 @@ function IncidentDrawer({ inc, onClose, onChange }) {
           <div>
             <div className="id-cell" style={{ fontSize: 13 }}>{inc.id}</div>
             <div style={{ fontFamily: 'var(--disp)', fontSize: 18, fontWeight: 600, marginTop: 3 }}>{inc.type}</div>
-            <div style={{ display: 'flex', gap: 7, marginTop: 8 }}><SevBadge sev={inc.severity} /><StatusBadge status={inc.status} /></div>
+            <div style={{ display: 'flex', gap: 7, marginTop: 8, flexWrap: 'wrap' }}><SevBadge sev={inc.severity} /><StatusBadge status={inc.status} /><ScadaBadges inc={inc} /></div>
           </div>
           <button className="iconbtn" onClick={onClose} aria-label="Close"><Icon name="x" size={16} /></button>
         </div>
@@ -125,6 +141,15 @@ function IncidentDrawer({ inc, onClose, onChange }) {
           <div className="kv-row"><span className="k">Customers affected</span><span className="v mono">{(inc.customers || 0).toLocaleString()}</span></div>
           <div className="kv-row"><span className="k">Cause</span><span className="v">{inc.cause}</span></div>
           <div className="kv-row"><span className="k">Source</span><span className="v mono">{inc.source}</span></div>
+          {inc.prediction && (
+            <div className="kv-row" title={inc.prediction.basis}>
+              <span className="k">Predicted downstream</span>
+              <span className="v">{predictionText(inc.prediction)}</span>
+            </div>
+          )}
+          {(inc.open_trip_tags || []).length > 0 && (
+            <div className="kv-row"><span className="k">Devices still open</span><span className="v mono" style={{ fontSize: 12 }}>{inc.open_trip_tags.join(', ')}</span></div>
+          )}
           <div className="kv-row"><span className="k">Opened</span><span className="v mono">{hhmm(inc.opened_at)} - {timeAgo(inc.opened_at)}</span></div>
           <div className="kv-row"><span className="k">SLA due</span><span className="v mono">{hhmm(inc.sla_due_at)}</span></div>
 
