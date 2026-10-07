@@ -5,7 +5,8 @@ process.env.PORT = process.env.PORT || '4100'; // so the restoration publisher's
 import express from 'express';
 import { migrate } from './infra/db.js';
 import { seed } from './infra/seed.js';
-import { api } from './routes/api.js';
+import { api, pickIncident } from './routes/api.js';
+import { distTx } from './infra/geo.js';
 import { repo } from './infra/repo.js';
 import { initBus } from './domain/bus.js';
 import { connectRedis, isRedisConnected } from './infra/redis.js';
@@ -437,6 +438,26 @@ const server = app.listen(4100, async () => {
   const cbCalls = (await j('GET', '/calls')).body;
   check('GET /calls shows callback_at only for calls actually called back',
     !!cbCalls.find((c) => c.id === 'CALL-CB1')?.callback_at && !cbCalls.find((c) => c.id === 'CALL-CB2')?.callback_at);
+
+  // 7b) a supply complaint arriving AFTER a SCADA trip joins the SCADA ticket
+  const scadaCand = { id: 'X', source: 'SCADA', type: 'outage', cause: 'SCADA CRITICAL on A.B.CB1.TRIP' };
+  check('complaint matching: No Supply joins a SCADA outage ticket', pickIncident([scadaCand], 'No Supply') === scadaCand);
+  check('complaint matching: Wire Down / Meter still do not join a SCADA outage ticket',
+    pickIncident([scadaCand], 'Wire Down') === null && pickIncident([scadaCand], 'Meter') === null);
+  _resetDedupState();
+  const lp = await trip('LALT.FDRA.CB1.TRIP', 'UPCL-LP-A');
+  const lpBefore = await repo.incident(lp.incidentId);
+  const lpDt = distTx.find((d) => d.feeder === 'UPCL-LP-A');
+  const openedBefore = (await j('GET', '/incidents')).body.length;
+  // The complaint row itself needs the pgcrypto migrations (db/migrations); without
+  // them the route fails AFTER the merge decision, so check the incident, not the status.
+  await fetch(base + '/complaints', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ externalId: 'EXT-LP', customer: 'Laltaro caller', phone: '9811100077', category: 'No Supply', lat: lpDt.lat, lon: lpDt.lon }) }).catch(() => {});
+  const lpAfter = await repo.incident(lp.incidentId);
+  check('end to end: complaint after a SCADA trip merges into the SCADA ticket, no second ticket',
+    (await repo.incidentEvents(lp.incidentId)).some((e) => e.kind === 'complaint' && /EXT-LP/.test(e.note))
+      && lpAfter.customers === lpBefore.customers + 1 && (await j('GET', '/incidents')).body.length === openedBefore,
+    `${lpBefore.customers} -> ${lpAfter.customers}`);
 
   // 8) the FAT hook end to end: /scada/simulate -> bus -> same handler
   process.env.ENABLE_SCADA_SIMULATION = 'true';
