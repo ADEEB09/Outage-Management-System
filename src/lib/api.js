@@ -108,6 +108,8 @@ function normalizeOmsJob(job) {
     assignedCrewId: job.assignedCrewId ?? job.crewId ?? null,
     assignedDistance: job.assignedDistance ?? job.distance ?? "Nearest available",
     incidentId: job.incident_id ?? job.incidentId ?? null,
+    // OMS-01: a job on a planned outage gets the permit / switching gates.
+    planned: (job.incident?.type ?? job.incidentType) === "Scheduled",
     coordinates: Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null,
   };
 }
@@ -210,4 +212,60 @@ export async function logout() {
   await AsyncStorage.multiRemove([JOBS_CACHE_KEY, JOBS_CACHE_SYNCED_AT_KEY]).catch(() => {});
   const { logout: sessionLogout } = await session();
   await sessionLogout(); // on web this redirects through Keycloak's logout
+}
+
+/* =========================================================
+   OMS-01 PLANNED OUTAGES
+   Permit calls are online-only: a failure is thrown, never queued.
+   Switching confirmations recorded offline are sent by safetyStore.js.
+========================================================= */
+
+// Like req(), but keeps what the caller needs to tell "no signal" from "the
+// server refused": err.status (none if the server wasn't reached) and the
+// server's rule code (e.g. PREDECESSOR_UNCONFIRMED).
+async function plannedReq(path, method = "GET", body) {
+  const { freshAuthHeader } = await session();
+  if (!IS_WEB) await loadServer();
+  const response = await fetch((IS_WEB ? WEB_API_URL : apiBase()) + path, {
+    method,
+    headers: { "Content-Type": "application/json", ...(await freshAuthHeader()) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw Object.assign(new Error(data.message || data.error || `HTTP ${response.status}`), { status: response.status, code: data.code });
+  }
+  return data;
+}
+
+const newRequestId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+// The job's outage as this crew sees it: steps (with "actionable"), permit.
+export function getPlannedOutage(jobId) {
+  return plannedReq(`/mobile/jobs/${jobId}/planned-outage`);
+}
+
+export function requestPermit(jobId) {
+  return plannedReq(`/mobile/jobs/${jobId}/permit/request`, "POST", { clientRequestId: newRequestId() });
+}
+
+export function withdrawPermit(permitId) {
+  return plannedReq(`/mobile/permits/${permitId}/withdraw`, "POST", {});
+}
+
+// declaration: { menWithdrawn, earthsRemoved, toolsClear, remarks }
+export function returnPermit(permitId, declaration) {
+  return plannedReq(`/mobile/permits/${permitId}/return`, "POST", { clientRequestId: newRequestId(), declaration });
+}
+
+// { clientConfirmationId, performedAt, lat, lon }; sentAt lets the server
+// correct a phone clock that is off.
+export function confirmSwitchingStep(stepId, body) {
+  return plannedReq(`/mobile/switching-steps/${stepId}/confirm`, "POST", { ...body, sentAt: new Date().toISOString() });
+}
+
+// Gated status change for a planned job (Work Started / Work Finished):
+// online only, so a refused or unsent change is reported, never queued.
+export function updatePlannedJobStatus(id, status, location = {}) {
+  return plannedReq(`/mobile/jobs/${id}/status`, "PATCH", { status, lat: location.lat ?? null, lon: location.lon ?? null });
 }

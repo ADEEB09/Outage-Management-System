@@ -51,6 +51,9 @@ const PriorityChecklist = PriorityChecklistModule.default || PriorityChecklistMo
 import FaultDiagnosisWizard from './components/FaultDiagnosisWizard';
 import PartsPicker from './components/PartsPicker';
 import CrewLeadSignOff from './components/CrewLeadSignOff';
+import PlannedOutagePanel from './components/PlannedOutagePanel';
+import { getPlannedOutage, updatePlannedJobStatus } from './lib/api.js';
+import { gateFor } from './lib/plannedOutage';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -417,8 +420,18 @@ function NativeAppScreen() {
       .catch(() => {});
   }, [authenticated]);
 
-  const handleAdvance = useCallback(async (job, nextStatus) => {
+  const handleAdvance = useCallback(async (job, nextStatus, opts = {}) => {
     const location = await getLocation();
+    // OMS-01: a gated planned-outage status change (Work Started / Work
+    // Finished) goes to the server first and the screen moves only once it
+    // was accepted. Never queued: the server would refuse a stale one, and it
+    // would sit in Pending Sync forever. Throws so the job screen can say so.
+    if (opts.onlineOnly) {
+      await updatePlannedJobStatus(job.id, nextStatus, location);
+      setJobs((current) => current.map((j) => (j.id === job.id ? { ...j, status: nextStatus } : j)));
+      setActiveJob((current) => current?.id === job.id ? { ...current, status: nextStatus } : current);
+      return;
+    }
     setJobs((current) => current.map((j) => (j.id === job.id ? { ...j, status: nextStatus } : j)));
     setActiveJob((current) => current?.id === job.id ? { ...current, status: nextStatus } : current);
 
@@ -999,6 +1012,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [checklistDone, setChecklistDone] = useState(false);
+  const [plannedMessage, setPlannedMessage] = useState('');
 
   // Completion flow: fault diagnosis -> parts used -> crew-lead sign-off.
   // Gates the final "Work Started" -> "Work Complete" transition.
@@ -1014,8 +1028,27 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
 
   const next = NEXT_STATUS[job.status];
 
+  // OMS-01 gates for planned-outage jobs: Work Started needs the crew's own
+  // isolation steps confirmed and the permit issued; Work Finished needs the
+  // permit returned. Read live from the server (offline = stays closed), then
+  // the usual safety checklist / completion flow runs. Fault jobs: unchanged.
+  const plannedGated = !!job.planned && (next === 'Work Started' || next === 'Work Finished');
+  const advance = () => {
+    const sent = Promise.resolve(onAdvance(job, next, plannedGated ? { onlineOnly: true } : undefined));
+    return plannedGated ? sent.catch((err) => setPlannedMessage(`Status NOT changed: ${err.message}`)) : sent;
+  };
+
   const requestAdvance = async () => {
     if (!next || !checklistDone) return;
+    if (plannedGated) {
+      setPlannedMessage('');
+      const view = await getPlannedOutage(job.id).catch(() => null);
+      const blocked = gateFor(view, next);
+      if (blocked) {
+        setPlannedMessage(blocked);
+        return;
+      }
+    }
     if (job.status === 'On Site') {
       setShowSafety(true);
       return;
@@ -1026,7 +1059,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
     }
     setAdvancing(true);
     try {
-      await onAdvance(job, next);
+      await advance();
     } finally {
       setAdvancing(false);
     }
@@ -1040,7 +1073,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
     // captured here and shown in-app; ask the integration track for a
     // completion-details endpoint if this should be persisted server-side.
     setAdvancing(true);
-    Promise.resolve(onAdvance(job, next)).finally(() => setAdvancing(false));
+    advance().finally(() => setAdvancing(false));
   };
 
   const takePhoto = () => {
@@ -1159,7 +1192,7 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
             onPass={() => {
               setShowSafety(false);
               setAdvancing(true);
-              Promise.resolve(onAdvance(job, next)).finally(() => setAdvancing(false));
+              advance().finally(() => setAdvancing(false));
             }}
             onCancel={() => setShowSafety(false)}
           />
@@ -1271,6 +1304,9 @@ function JobDetail({ job, crew, onClose, onAdvance, onNavigate }) {
         )}
         {checklistDone && showPhotoCamera && <PhotoCamera onCapture={saveCapturedPhoto} onClose={() => setShowPhotoCamera(false)} />}
         {message ? <Text style={styles.assetValue}>{message}</Text> : null}
+
+        {checklistDone && job.planned && <PlannedOutagePanel job={job} />}
+        {plannedMessage ? <Text style={styles.plannedGate}>{plannedMessage}</Text> : null}
 
         {checklistDone && next && !completionStep && (
           <Pressable style={styles.primaryBtn} onPress={requestAdvance} disabled={advancing}>
@@ -1659,6 +1695,7 @@ function ProfileScreen({ crew, jobs, onLogout }) {
 }
 
 const styles = StyleSheet.create({
+  plannedGate: { color: '#8A4B00', backgroundColor: '#FFF4E5', borderRadius: 10, padding: 10, marginTop: 10, fontSize: 14, fontWeight: '600' },
   loginSafe: { flex: 1, backgroundColor: '#10201d' },
   login: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 48 },
   loginKicker: { color: '#27c7b2', fontSize: 13, fontWeight: '800', letterSpacing: 2 },
