@@ -207,6 +207,10 @@ export async function migrate() {
   `);
   await db.none(`
     ALTER TABLE alarms    ADD COLUMN IF NOT EXISTS incident_id TEXT REFERENCES incidents(id);
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS area TEXT;
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS reject_reason TEXT;
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ;
+    ALTER TABLE trouble_calls ADD COLUMN IF NOT EXISTS rejected_by TEXT;
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_state TEXT;
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_reason TEXT;
     ALTER TABLE crews ADD COLUMN IF NOT EXISTS tracking_changed_at TIMESTAMPTZ;

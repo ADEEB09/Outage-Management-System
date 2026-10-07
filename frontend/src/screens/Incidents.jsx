@@ -157,7 +157,7 @@ function IncidentDrawer({ inc, onClose, onChange }) {
             <>
               <div style={{ margin: '18px 0 8px' }} className="eyebrow">Assign crew - nearest first</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {nearest.map((c) =>  n       (
+                {nearest.map((c) => (
                   <button key={c.id} className="btn sm" disabled={busy} onClick={() => doAssign(c.id)}>
                     {c.name} - {c.meters_away < 1000 ? `${Math.round(c.meters_away)} m` : `${(c.meters_away / 1000).toFixed(1)} km`}
                   </button>
