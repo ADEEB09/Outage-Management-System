@@ -38,8 +38,9 @@ export function startSimulator() {
         priority: cond === 'CRITICAL' ? 1 : cond === 'MAJOR' ? 2 : 3,
         message: `${cond} condition detected on field device`, ts: new Date().toISOString(), ack: 0,
       });
+      // Once, with the substation's location (like the inject endpoint and
+      // DNP3 adapter): every publish reaches the SCADA consumer and the dashboard.
       bus.publish(TOPICS.ALARM_RAISED, { ...a, lat: s.lat, lon: s.lon });
-      bus.publish(TOPICS.ALARM_RAISED, a);
     } catch (e) { console.error('[simulator] alarm error', e); }
   }, 22000);
 
