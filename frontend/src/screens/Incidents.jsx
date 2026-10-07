@@ -175,7 +175,9 @@ function IncidentDrawer({ inc, onClose, onChange }) {
                 {s === 'cancelled' ? 'Cancel' : (inc.status === 'pending' && s === 'resolved') ? 'Accept - verified restored' : (inc.status === 'pending' && s === 'in_progress') ? 'Deny - send crew back' : `-> ${(inc.stateLabels?.[s] || s)}`}
               </button>
             ))}
-            {!inc.nextStates?.length && <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>Terminal state - no further transitions.</span>}
+            {!inc.nextStates?.length && <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{inc.plannedOutageId
+              ? 'Planned outage - its status follows the switching plan and work permits. Manage it in Planned outages.'
+              : 'Terminal state - no further transitions.'}</span>}
           </div>
 
           {!inc.crew_id && ['open', 'dispatched'].includes(inc.status) && (
@@ -238,7 +240,7 @@ function NewIncident({ onClose, onCreated }) {
   {['Mayapur', 'Bhoopatwala', 'Industrial Area', 'Jwalapur-I', 'Kankhal-2', 'Dehradun Central', 'Clement Town, Dehradun', 'Ballupur, Dehradun', 'Jwalapur, Haridwar'].map((z) => <option key={z} value={z}>{z}</option>)}
 </select>)}
           {field('Severity', <select style={inp} value={f.severity} onChange={set('severity')}>{['critical', 'high', 'medium', 'low'].map((s) => <option key={s}>{s}</option>)}</select>)}
-          {field('Type', <select style={inp} value={f.type} onChange={set('type')}>{['Power Outage', 'Partial Power', 'Scheduled'].map((s) => <option key={s}>{s}</option>)}</select>)}
+          {field('Type', <select style={inp} value={f.type} onChange={set('type')}>{['Power Outage', 'Partial Power'].map((s) => <option key={s}>{s}</option>)}</select>)}
           {field('Feeder', <input style={inp} value={f.feeder} onChange={set('feeder')} placeholder="FDR-SE01-F02" />)}
           {field('Customers affected', <input style={inp} type="number" value={f.customers} onChange={set('customers')} />)}
           {field('Cause', <input style={inp} value={f.cause} onChange={set('cause')} />)}

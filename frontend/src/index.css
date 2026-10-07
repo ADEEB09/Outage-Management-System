@@ -186,6 +186,10 @@ button{font-family:inherit;cursor:pointer}
 .st-closed{background:#eef1f4;color:var(--ink-2)}
 .st-scheduled{background:#e4f4fb;color:#0e7490}
 .st-cancelled{background:#eef1f4;color:var(--muted)}
+/* OMS-01 planned-outage states */
+.st-notified{background:#e4f4fb;color:#0e7490}
+.st-isolating{background:var(--high-bg);color:var(--high)}
+.st-restoring{background:var(--med-bg);color:var(--med)}
 
 /* ---- table ---- */
 table{width:100%;border-collapse:collapse;font-size:13px}

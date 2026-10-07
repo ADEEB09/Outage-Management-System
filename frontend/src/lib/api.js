@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import { authHeader } from './auth.js';
 
 const BASE = '/api';
-async function req(method, path, body) {
+export async function req(method, path, body) {
   const r = await fetch(BASE + path, {
     method,
     headers: { 'content-type': 'application/json', ...authHeader() },
