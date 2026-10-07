@@ -206,6 +206,7 @@ function IncidentDrawer({ inc, onClose, onChange }) {
           <MessagePanel incidentId={inc.id} />
         </div>
           <PhotoPanel incidentId={inc.id} />
+          <AssetScanPanel incidentId={inc.id} />
       </DrawerContent>
     </Drawer>
   );
@@ -290,6 +291,46 @@ function MessagePanel({ incidentId }) {
         <button onClick={send} disabled={busy} style={{ padding: '8px 14px', borderRadius: 8, border: 0, background: '#12325a', color: '#fff', cursor: 'pointer' }}>
           Send
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Equipment the crew scanned on site (QR on poles, transformers, meters).
+// asset_details is whatever the QR code carried, if it was JSON.
+function AssetScanPanel({ incidentId }) {
+  const [scans, setScans] = useState([]);
+  const load = () => api.assetScans(incidentId).then(setScans).catch(() => setScans([]));
+  useEffect(() => { load(); }, [incidentId]); // eslint-disable-line
+  useLiveRefresh(['crew.job.updated'], load);
+
+  return (
+    <div style={{ margin: '20px 0 10px' }}>
+      <div className="eyebrow">Asset scans ({scans.length})</div>
+      {!scans.length && <div style={{ fontSize: 13, opacity: 0.6, margin: '10px 0' }}>No assets scanned yet.</div>}
+      <div style={{ display: 'grid', gap: 8, margin: '10px 0' }}>
+        {scans.map((s) => {
+          const details = typeof s.asset_details === 'string' ? JSON.parse(s.asset_details) : (s.asset_details || {});
+          const entries = Object.entries(details).filter(([, v]) => v != null && typeof v !== 'object');
+          return (
+            <div key={s.id} style={{ border: '1px solid var(--line-2)', borderRadius: 8, padding: '8px 10px', fontSize: 13 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <b className="mono">{s.asset_id || s.raw_value}</b>
+                <span style={{ opacity: 0.7 }}>{s.crew_id || 'Unknown crew'} - {hhmm(s.scanned_at)}</span>
+              </div>
+              {entries.length > 0 && (
+                <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: '2px 12px', opacity: 0.85 }}>
+                  {entries.map(([k, v]) => <span key={k}><span style={{ opacity: 0.6 }}>{k}:</span> {String(v)}</span>)}
+                </div>
+              )}
+              {Number.isFinite(s.lat) && Number.isFinite(s.lon) && (
+                <a href={`https://www.openstreetmap.org/?mlat=${s.lat}&mlon=${s.lon}#map=18/${s.lat}/${s.lon}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+                  Scanned at {s.lat.toFixed(5)}, {s.lon.toFixed(5)}
+                </a>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -93,6 +93,9 @@ api.get('/incidents/:id/photos', async (req, res) => {
   res.json(photos);
 });
 
+// QR asset scans the crew made on site, across every job tied to the incident.
+api.get('/incidents/:id/asset-scans', async (req, res) => res.json(await repo.assetScansForIncident(req.params.id)));
+
 // ---------- crew app job/crew messages ----------
 // These reuse the SAME messages thread the web app's incident drawer shows --
 // a job's messages ARE that job's incident's messages. No separate storage;
@@ -646,6 +649,22 @@ api.post('/mobile/crews/:id/location', async (req, res) => {
 // claim (demo accounts mapped by username) fall back to the route id.
 const ownsCrew = (req, crewId) => !req.user?.crewId || req.user.crewId === crewId;
 
+// When something the crew app sends actually happened. Queued offline
+// updates carry `ts` (when it happened, phone clock) and `sentAt` (when it
+// was sent, same clock); the difference is applied to the server's clock, so
+// a phone whose clock is off still lands at the right time. No ts, an
+// unparsable one, or one older than a week -> now. Never in the future.
+const MAX_CLIENT_AGE_MS = 7 * 24 * 3600 * 1000;
+function clientTime(ts, sentAt) {
+  const now = Date.now();
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t)) return new Date(now).toISOString();
+  const s = Date.parse(sentAt);
+  const at = Number.isFinite(s) ? now - (s - t) : t;
+  if (at > now || now - at > MAX_CLIENT_AGE_MS) return new Date(now).toISOString();
+  return new Date(at).toISOString();
+}
+
 api.post('/mobile/crews/:id/locations', async (req, res) => {
   const crewId = req.params.id;
   if (!ownsCrew(req, crewId)) return res.status(403).json({ error: 'cannot report location for another crew' });
@@ -674,6 +693,8 @@ const TRACKING_OFF_REASONS = {
   permission_denied: 'location permission was denied',
   background_permission_denied: 'background location ("Allow all the time") was denied',
   turned_off: 'the crew turned tracking off',
+  location_services_off: "the phone's Location is switched off",
+  start_failed: 'tracking failed to start on the phone',
   signed_out: 'the crew signed out',
 };
 
@@ -797,7 +818,7 @@ api.get('/mobile/jobs/:id/history', async (req, res) => res.json(await repo.jobU
 api.post('/mobile/jobs/:id/assets/scans', async (req, res) => {
   const job = await repo.job(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
-  const { rawValue, assetId, assetDetails, lat, lon, crewId } = req.body || {};
+  const { rawValue, assetId, assetDetails, lat, lon, crewId, scannedAt, sentAt } = req.body || {};
   if (!rawValue || typeof rawValue !== 'string') {
     return res.status(400).json({ error: 'rawValue is required' });
   }
@@ -813,8 +834,9 @@ api.post('/mobile/jobs/:id/assets/scans', async (req, res) => {
     asset_details: assetDetails && typeof assetDetails === 'object' ? assetDetails : {},
     lat: Number(lat),
     lon: Number(lon),
-    scanned_at: new Date().toISOString(),
+    scanned_at: clientTime(scannedAt, sentAt),
   });
+  bus.publish(TOPICS.JOB_UPDATED, job); // dashboard's asset-scan panel refreshes
   res.status(201).json(scan);
 });
 
@@ -828,7 +850,7 @@ api.get('/mobile/jobs/:id/assets/scans', async (req, res) => {
 api.post('/mobile/jobs/:id/photos', async (req, res) => {
   const job = await repo.job(req.params.id);
   if (!job) return res.status(404).json({ error: 'not found' });
-  const { dataUrl, lat, lon, note, technicianId, metadata } = req.body || {};
+  const { dataUrl, lat, lon, note, technicianId, metadata, capturedAt, sentAt } = req.body || {};
   if (!dataUrl || typeof dataUrl !== 'string') {
     return res.status(400).json({ error: 'dataUrl required' });
   }
@@ -841,7 +863,7 @@ api.post('/mobile/jobs/:id/photos', async (req, res) => {
   }
   const photo = await repo.addJobPhoto(req.params.id, {
     image, originalContentType: original.contentType, originalBytes: original.buffer.length,
-  }, lat, lon, note, technicianId, metadata);
+  }, lat, lon, note, technicianId, metadata, clientTime(capturedAt, sentAt));
   res.status(201).json(photo);
 });
 
@@ -865,16 +887,24 @@ api.patch('/mobile/jobs/:id/status', async (req, res) => {
   if (!job) return res.status(404).json({ error: 'not found' });
   const { lat, lon, note } = req.body || {};
   const status = req.body?.status === 'Work Finished' ? 'Work Complete' : req.body?.status;
-  await repo.updateJob(job.id, { status, updated_at: new Date().toISOString() });
-  await repo.addJobUpdate(job.id, status, lat ?? null, lon ?? null, note ?? null);
-  // reflect crew status + incident progress back to control room
-  const map = { 'En Route': 'in_transit', 'On Site': 'in_service', 'Work Started': 'in_service', 'Work Complete': 'available' };
-  if (map[status]) await repo.updateCrew(job.crew_id, { status: map[status] });
-  if (status === 'On Site' && job.incident_id) await repo.updateIncident(job.incident_id, { status: 'in_progress' });
-  if (job.incident_id) { await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Status: ' + status); }
-  if (status === 'Work Complete' && job.incident_id) {
-    await repo.updateIncident(job.incident_id, { status: 'pending' });
-    await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Work complete - awaiting verification');
+  // When the crew made the change, which is earlier than now if the phone
+  // was offline and this comes from its pending-sync queue.
+  const ts = clientTime(req.body?.ts, req.body?.sentAt);
+  // An update older than the job's current one (queued offline, synced after
+  // a newer one) goes into the history but must not roll the status back.
+  const isLatest = !job.updated_at || new Date(ts) >= new Date(job.updated_at);
+  await repo.addJobUpdate(job.id, status, lat ?? null, lon ?? null, note ?? null, ts);
+  if (job.incident_id) await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Status: ' + status, ts);
+  if (isLatest) {
+    await repo.updateJob(job.id, { status, updated_at: ts });
+    // reflect crew status + incident progress back to control room
+    const map = { 'En Route': 'in_transit', 'On Site': 'in_service', 'Work Started': 'in_service', 'Work Complete': 'available' };
+    if (map[status]) await repo.updateCrew(job.crew_id, { status: map[status] });
+    if (status === 'On Site' && job.incident_id) await repo.updateIncident(job.incident_id, { status: 'in_progress' });
+    if (status === 'Work Complete' && job.incident_id) {
+      await repo.updateIncident(job.incident_id, { status: 'pending' });
+      await repo.addIncidentEvent(job.incident_id, 'Crew', 'field', 'Work complete - awaiting verification', ts);
+    }
   }
   if (job.incident_id) await cacheDel('indicators');
   const updated = await repo.job(job.id);

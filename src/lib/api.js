@@ -87,7 +87,13 @@ async function req(path, method = "GET", body) {
     headers: { "Content-Type": "application/json", ...(await freshAuthHeader()) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    // Keep the HTTP status: the pending-sync queue retries a server it
+    // couldn't reach or a 5xx, but not a request the server refused (4xx).
+    const err = new Error(await response.text());
+    err.status = response.status;
+    throw err;
+  }
   return response.json();
 }
 
@@ -149,8 +155,10 @@ export async function getMyJobs() {
   }
 }
 
-// PATCH /api/mobile/jobs/:id/status  { status, lat, lon }
-export async function updateJobStatus(id, status, location = {}) {
+// PATCH /api/mobile/jobs/:id/status  { status, lat, lon, ts, sentAt }
+// ts: when the crew made the change, if earlier than now (pending sync).
+// sentAt lets the server correct for a phone clock that is off.
+export async function updateJobStatus(id, status, location = {}, ts) {
   const { isAuthenticated } = await session();
   if (!isAuthenticated()) {
     // Demo mode: keep the change locally so the demo flow still advances.
@@ -161,6 +169,8 @@ export async function updateJobStatus(id, status, location = {}) {
     status,
     lat: location.lat ?? null,
     lon: location.lon ?? null,
+    ts: ts ?? null,
+    sentAt: new Date().toISOString(),
   });
 }
 
@@ -174,6 +184,7 @@ export async function uploadJobPhoto(id, dataUrl, location = {}, note, metadata 
     lon: location.lon ?? null,
     note: note ?? null,
     ...metadata,
+    sentAt: new Date().toISOString(),
   });
 }
 
@@ -198,7 +209,7 @@ export async function getJobPhotos(jobId) {
 }
 
 export async function saveAssetScan(jobId, scan) {
-  return req(`/mobile/jobs/${jobId}/assets/scans`, "POST", scan);
+  return req(`/mobile/jobs/${jobId}/assets/scans`, "POST", { ...scan, sentAt: new Date().toISOString() });
 }
 
 export async function getAssetScans(jobId) {

@@ -20,6 +20,31 @@ const CREW_ID_KEY = "oms-tracking-crew-id";
 const PAUSED_BY_CREW_KEY = "oms-tracking-paused-by-crew";
 let currentCrewId = null;
 
+// The OS delivers a fix every few seconds even when parked (distanceInterval
+// is 0, see startCrewTracking). Only fixes that moved MIN_MOVE_M, or a
+// heartbeat every HEARTBEAT_MS when standing still, are kept, so dispatch can
+// tell "parked at the site" from "phone stopped reporting" (the backend
+// flags a crew whose position goes stale).
+const MIN_MOVE_M = 10;
+const HEARTBEAT_MS = 60 * 1000;
+let lastKept = null;
+
+function metersBetween(a, b) {
+  const rad = Math.PI / 180;
+  const dLat = (b.latitude - a.latitude) * rad;
+  const dLon = (b.longitude - a.longitude) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * rad) * Math.cos(b.latitude * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+
+function keepFix(loc) {
+  const c = loc?.coords;
+  if (!c) return false;
+  if (lastKept && loc.timestamp - lastKept.timestamp < HEARTBEAT_MS && metersBetween(lastKept.coords, c) < MIN_MOVE_M) return false;
+  lastKept = loc;
+  return true;
+}
+
 // The background task must be defined at module scope (not inside a
 // component), so it survives app restarts and can be found by the OS
 // when it wakes the task up in the background.
@@ -30,8 +55,8 @@ TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
   }
   // The OS may batch several fixes into one wake-up (oldest first) —
   // keep all of them, not just one, so the trail has no gaps.
-  const locations = data?.locations;
-  if (!locations?.length) return;
+  const locations = (data?.locations || []).filter(keepFix);
+  if (!locations.length) return;
 
   // `currentCrewId` is only set in memory by startCrewTracking(), so it's
   // gone if this fired in a fresh headless JS instance after the app
@@ -73,9 +98,10 @@ export async function startCrewTracking(crewId) {
     // which degrade badly exactly when the crew has no data connection.
     accuracy: Location.Accuracy.High,
     // Frequent enough for dispatch to watch the crew move live on the map.
-    // A parked crew sends nothing new: a fix needs both 5 s elapsed and 10 m moved.
+    // distanceInterval 0 so a parked crew still gets fixes; keepFix() thins
+    // them to moves of 10 m plus a once-a-minute heartbeat.
     timeInterval: 5000,
-    distanceInterval: 10,
+    distanceInterval: 0,
     pausesUpdatesAutomatically: false, // iOS: don't silently stop when parked at a site
     activityType: Location.ActivityType.OtherNavigation,
     showsBackgroundLocationIndicator: true,
@@ -96,6 +122,13 @@ export async function stopCrewTracking() {
   // Anything still queued is kept (tagged with its crew id) and uploaded by
   // the next flush — stopping tracking must not discard recorded history.
   flushLocations().catch(() => {});
+}
+
+// Whether the phone's Location switch is on. Tracking keeps running while it
+// is off (Android resumes the fixes by itself once it is back on), but no
+// positions arrive, so the app warns the crew and tells dispatch.
+export async function isLocationServiceOn() {
+  return Location.hasServicesEnabledAsync().catch(() => true);
 }
 
 export async function isCrewTrackingActive() {

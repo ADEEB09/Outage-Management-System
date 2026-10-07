@@ -18,6 +18,7 @@ import { startScadaConsumer } from './realtime/scada.js';
 import { startRestorationPublisher } from './realtime/restoration.js';
 import { startNotifier } from './realtime/notifier.js';
 import { startScheduledReports } from './realtime/scheduledReports.js';
+import { startStaleLocationMonitor } from './realtime/staleLocation.js';
 // ...alongside your other startX() calls at boot:
 startScheduledReports();
 const PORT = process.env.PORT || 4000;
@@ -44,6 +45,7 @@ process.on('uncaughtException', (err) => logFatal('uncaughtException', err));
  await initBus();       // memory driver by default; EVENT_BUS_DRIVER=kafka for the real broker
  startScadaConsumer();  // Phase 2: auto-detect outages from SCADA fault events
  startRestorationPublisher(); // Phase 2: publish restoration commands back to the DMS
+ startStaleLocationMonitor(); // alert dispatch when a tracked crew's phone goes quiet
 
 const app = express();
 app.use(cors());

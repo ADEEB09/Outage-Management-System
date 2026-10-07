@@ -73,8 +73,9 @@ export const repo = {
     `UPDATE incidents SET open_trip_tags = open_trip_tags - $/tag/
      WHERE open_trip_tags ? $/tag/ AND status NOT IN ('resolved','closed','cancelled')
      RETURNING *`, { tag }),
-  addIncidentEvent: async (incidentId, actor, kind, note) => {
-    const ev = { id: 'EV' + nanoid(8), incident_id: incidentId, ts: new Date().toISOString(), actor, kind, note };
+  // ts: when it happened, if not now (e.g. a crew update synced late).
+  addIncidentEvent: async (incidentId, actor, kind, note, ts) => {
+    const ev = { id: 'EV' + nanoid(8), incident_id: incidentId, ts: ts || new Date().toISOString(), actor, kind, note };
     await db.none(`INSERT INTO incident_events (id,incident_id,ts,actor,kind,note)
       VALUES ($/id/,$/incident_id/,$/ts/,$/actor/,$/kind/,$/note/)`, ev);
     return ev;
@@ -238,8 +239,8 @@ export const repo = {
     await db.none(`UPDATE jobs SET ${setClause(patch)} WHERE id=$/id/`, { ...patch, id });
     return repo.job(id);
   },
-  addJobUpdate: async (jobId, status, lat, lon, note) => {
-    const u = { id: 'JU' + nanoid(8), job_id: jobId, status, lat, lon, note, ts: new Date().toISOString() };
+  addJobUpdate: async (jobId, status, lat, lon, note, ts) => {
+    const u = { id: 'JU' + nanoid(8), job_id: jobId, status, lat, lon, note, ts: ts || new Date().toISOString() };
     await db.none(`INSERT INTO job_updates (id,job_id,status,lat,lon,note,ts)
       VALUES ($/id/,$/job_id/,$/status/,$/lat/,$/lon/,$/note/,$/ts/)`, u);
     return u;
@@ -255,6 +256,12 @@ export const repo = {
   },
   assetScansForJob: (jobId) =>
     db.any('SELECT * FROM asset_scans WHERE job_id=$1 ORDER BY scanned_at DESC', [jobId]),
+  // Across every job tied to the incident, like photosForIncident.
+  assetScansForIncident: (incidentId) => db.any(
+    `SELECT s.* FROM asset_scans s JOIN jobs j ON s.job_id = j.id
+     WHERE j.incident_id = $1 ORDER BY s.scanned_at DESC`,
+    [incidentId]
+  ),
   addCrewLocation: async (crewId, lat, lon) =>
     db.one(
       `INSERT INTO crew_locations (crew_id, lat, lon) VALUES ($1, $2, $3)
@@ -271,7 +278,7 @@ export const repo = {
 
   // `image` is the already-compressed photo ({ buffer, contentType, width, height });
   // the returned row is metadata only, without the image bytes.
-  addJobPhoto: async (jobId, { image, originalContentType, originalBytes }, lat, lon, note, technicianId, metadata) => {
+  addJobPhoto: async (jobId, { image, originalContentType, originalBytes }, lat, lon, note, technicianId, metadata, ts) => {
     const ph = {
       id: 'PH' + nanoid(8),
       job_id: jobId,
@@ -282,7 +289,7 @@ export const repo = {
       lat: lat ?? null,
       lon: lon ?? null,
       note: note ?? null,
-      ts: new Date().toISOString(),
+      ts: ts || new Date().toISOString(),
       technician_id: technicianId ?? null,
       metadata: { ...(metadata ?? {}), originalBytes, storedBytes: image.buffer.length },
     };

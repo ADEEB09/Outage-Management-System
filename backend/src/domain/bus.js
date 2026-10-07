@@ -25,6 +25,7 @@ export const TOPICS = {
   MESSAGE_POSTED: 'oms.message.posted',
     ERT_CHANGED: 'oms.incident.ert_changed',
   CREW_TRACKING_CHANGED: 'crew.tracking.changed',
+  CREW_LOCATION_STALE: 'crew.location.stale',
 };
 const ALL_TOPICS = Object.values(TOPICS);
 

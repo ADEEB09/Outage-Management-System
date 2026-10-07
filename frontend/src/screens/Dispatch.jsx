@@ -7,16 +7,30 @@ const TRACKING_OFF_TEXT = {
   permission_denied: 'location permission was denied',
   background_permission_denied: 'background location ("Allow all the time") was denied',
   turned_off: 'the crew turned tracking off',
+  location_services_off: "the phone's Location is switched off",
+  start_failed: 'tracking failed to start on the phone',
+};
+
+// Tracking is on but no position for this long: the phone has gone quiet
+// (matches the backend's stale-location monitor; the app sends a fix at
+// least once a minute, even when parked).
+const STALE_MS = 5 * 60 * 1000;
+const isStale = (c, now) => {
+  if (c.tracking_state !== 'on') return false;
+  const since = Math.max(c.location_updated_at ? Date.parse(c.location_updated_at) : 0, c.tracking_changed_at ? Date.parse(c.tracking_changed_at) : 0);
+  return since > 0 && now - since > STALE_MS;
 };
 
 export default function Dispatch() {
   const [inc, setInc] = useState([]);
   const [crews, setCrews] = useState([]);
   const [pick, setPick] = useState({});
+  const [now, setNow] = useState(Date.now());
 
   const load = () => { api.incidents().then(setInc); api.crews().then(setCrews); };
   useEffect(() => { load(); }, []);
-  useLiveRefresh(['oms.incident.updated', 'oms.incident.created', 'crew.updated', 'crew.job.updated', 'crew.tracking.changed'], load);
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  useLiveRefresh(['oms.incident.updated', 'oms.incident.created', 'crew.updated', 'crew.job.updated', 'crew.tracking.changed', 'crew.location.stale'], load);
 
   const unassigned = inc.filter((i) => !i.crew_id && ['open', 'dispatched'].includes(i.status));
   const available = crews.filter((c) => c.status === 'available');
@@ -74,6 +88,9 @@ export default function Dispatch() {
                     {c.name} <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 12 }}>· {c.lead}</span>
                     {c.tracking_state === 'off' && TRACKING_OFF_TEXT[c.tracking_reason] && (
                       <span title={`${TRACKING_OFF_TEXT[c.tracking_reason]}, ${timeAgo(c.tracking_changed_at)}`} style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 600, color: 'var(--crit)', background: 'var(--crit-bg)', borderRadius: 4, padding: '1px 6px' }}>Tracking off</span>
+                    )}
+                    {isStale(c, now) && (
+                      <span title={`Tracking is on but no position since ${c.location_updated_at ? timeAgo(c.location_updated_at) : 'tracking started'}: Location off, no signal, or the app was stopped`} style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 600, color: 'var(--crit)', background: 'var(--crit-bg)', borderRadius: 4, padding: '1px 6px' }}>No GPS · {c.location_updated_at ? timeAgo(c.location_updated_at) : 'none yet'}</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 5 }}>

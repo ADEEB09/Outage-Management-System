@@ -4,6 +4,7 @@
 import * as ImagePicker from "expo-image-picker";
 import { uploadJobPhoto } from "./api";
 import { getLocation } from "./location";
+import { isRetryable, queuePhoto } from "./offlineQueue";
 
 async function uriToDataUrl(uri) {
   const response = await fetch(uri);
@@ -31,8 +32,7 @@ async function uploadCapturedPhoto(jobId, photo, note, technician = {}) {
       ? await uriToDataUrl(photo.uri)
       : null;
   if (!dataUrl) throw new Error("Camera did not return image data");
-  return uploadJobPhoto(jobId, dataUrl, loc, note, {
-    capturedAt: new Date().toISOString(),
+  const extra = {
     technicianId: technician.id ?? null,
     metadata: {
       technicianName: technician.name ?? null,
@@ -40,7 +40,16 @@ async function uploadCapturedPhoto(jobId, photo, note, technician = {}) {
       width: photo.width ?? null,
       height: photo.height ?? null,
     },
-  });
+  };
+  try {
+    return await uploadJobPhoto(jobId, dataUrl, loc, note, { ...extra, capturedAt: new Date().toISOString() });
+  } catch (err) {
+    // No signal at the site: keep the photo for pending sync instead of
+    // losing it. A photo the server refused is a real error.
+    if (!isRetryable(err)) throw err;
+    await queuePhoto(jobId, dataUrl, loc, note, extra);
+    return { queued: true };
+  }
 }
 
 export { uploadCapturedPhoto };

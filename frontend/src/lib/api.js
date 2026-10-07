@@ -40,6 +40,7 @@ export const api = {
   assign: (id, crewId, priority) => req('POST', `/incidents/${id}/assign`, { crewId, priority }),
   messages: (id) => req('GET', `/incidents/${id}/messages`),
   photos: (id) => req('GET', `/incidents/${id}/photos`),
+  assetScans: (id) => req('GET', `/incidents/${id}/asset-scans`),
   photoDetail: (photoId) => req('GET', `/mobile/photos/${photoId}`),
   postMessage: (id, body) => req('POST', `/incidents/${id}/messages`, { body }),
   setErt: (id, ert) => req('PATCH', `/incidents/${id}/ert`, { ert }),
