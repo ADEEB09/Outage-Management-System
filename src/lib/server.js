@@ -13,7 +13,10 @@ const SERVER_KEY = "oms-server-host";
 // A bare hostname or IPv4 address. Ports are fixed (API_PORT, KEYCLOAK_PORT).
 const HOST_RE = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
 
-let host = DEFAULT_SERVER;
+// On web the backend and Keycloak are on the PC serving the page, so start
+// from the page's own host (e.g. localhost) instead of a phone's LAN default.
+const pageHost = typeof window !== "undefined" && window.location ? normalizeServer(window.location.hostname) : null;
+let host = pageHost || DEFAULT_SERVER;
 let loadPromise = null;
 
 // Accepts what a tester is likely to type ("http://192.168.1.20:4000/api",

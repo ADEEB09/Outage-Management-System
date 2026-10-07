@@ -2,15 +2,21 @@
 // Leaflet map in a WebView, reading raster tiles from the offline pack on
 // disk (see lib/offlineMap). Works with no network at all once the pack
 // has been downloaded.
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createElement, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { ensureMapPage } from '../lib/offlineMap/mapPage';
+import { buildHtml, ensureMapPage } from '../lib/offlineMap/mapPage';
 import { mapRoot } from '../lib/offlineMap/tileStore';
 import { usingMapTestServer } from '../lib/mapServer';
 
+// Web build: no WebView, so the same Leaflet page runs in a sandboxed iframe
+// with live OpenStreetMap tiles (see buildHtml({ web: true })).
+const IS_WEB = Platform.OS === 'web';
+
 const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onSelectJob, onUserGesture, onRouteProgress, style }, ref) {
   const webRef = useRef(null);
+  const frameRef = useRef(null);
+  const webHtml = useMemo(() => (IS_WEB ? buildHtml({ web: true }) : null), []);
   const [pageUri, setPageUri] = useState(null);
   const [pageError, setPageError] = useState(null);
   const [ready, setReady] = useState(false);
@@ -23,7 +29,11 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onS
     ensureMapPage().then(setPageUri).catch((err) => setPageError(err?.message || 'Map failed to load'));
   }, []);
 
-  const run = useCallback((js) => {
+  const run = useCallback((js, webCmd) => {
+    if (IS_WEB) {
+      frameRef.current?.contentWindow?.postMessage(webCmd, '*');
+      return;
+    }
     // Report failures back instead of swallowing them, so they show up in
     // the device log (logcat) as [OfflineMap] warnings.
     webRef.current?.injectJavaScript(
@@ -33,7 +43,7 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onS
 
   useImperativeHandle(ref, () => ({
     fit: (kind) => {
-      if (ready) run(`window.OMS && OMS.fit(${JSON.stringify(String(kind))});`);
+      if (ready) run(`window.OMS && OMS.fit(${JSON.stringify(String(kind))});`, { omsCmd: 'fit', kind: String(kind) });
       else pendingFit.current = String(kind);
     },
   }), [run, ready]);
@@ -49,9 +59,9 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onS
       jobs,
       route: route && Array.isArray(route.coords) ? { coords: route.coords } : null,
     };
-    run(`window.OMS && OMS.update(${JSON.stringify(state)});`);
+    run(`window.OMS && OMS.update(${JSON.stringify(state)});`, { omsCmd: 'update', state });
     if (pendingFit.current) {
-      run(`window.OMS && OMS.fit(${JSON.stringify(pendingFit.current)});`);
+      run(`window.OMS && OMS.fit(${JSON.stringify(pendingFit.current)});`, { omsCmd: 'fit', kind: pendingFit.current });
       pendingFit.current = null;
     }
   }, [ready, pack, crew, jobs, route, run]);
@@ -71,10 +81,32 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onS
     else if (msg?.type === 'error' || msg?.type === 'tileerror') console.warn('[OfflineMap]', msg.type, String(msg.message || ''));
   }, [onSelectJob, onUserGesture, onRouteProgress]);
 
-  if (Platform.OS === 'web') {
+  // Web: the page's messages arrive via window.postMessage from the iframe.
+  useEffect(() => {
+    if (!IS_WEB) return undefined;
+    const listener = (e) => {
+      if (e.source !== frameRef.current?.contentWindow || typeof e.data?.omsMap !== 'string') return;
+      onMessage({ nativeEvent: { data: e.data.omsMap } });
+    };
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, [onMessage]);
+
+  if (IS_WEB) {
     return (
-      <View style={[styles.box, styles.center, style]}>
-        <Text style={styles.note}>The offline map is available in the mobile app.</Text>
+      <View style={[styles.box, style]}>
+        {createElement('iframe', {
+          ref: frameRef,
+          title: 'Map',
+          srcDoc: webHtml,
+          // Not sandboxed: the page needs the app's origin so its tile requests
+          // carry a Referer — OpenStreetMap answers referer-less requests with
+          // an "Access blocked" tile. It is our own static HTML (strict CSP,
+          // job text inserted as text), so this exposes nothing new.
+          referrerPolicy: 'strict-origin-when-cross-origin',
+          onLoad: () => setReady(true),
+          style: { border: 0, width: '100%', height: '100%', display: 'block' },
+        })}
       </View>
     );
   }

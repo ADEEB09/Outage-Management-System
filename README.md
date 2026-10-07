@@ -11,7 +11,7 @@ TimescaleDB, Keycloak, Kong). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 |---|---|---|---|
 | **Backend** | `backend/` | 4000 | Express + PostgreSQL/PostGIS + socket.io, domain state machine, IEEE 1366 indices, SCADA sim |
 | **Control-room web** | `frontend/` | 5173 | React — Dashboard, Incidents, Dispatch, Network map, Alarms, TCS, Analytics, Admin |
-| **Mobile crew app** | `mobile/` | 5174 | React PWA — crew login, job workflow, GPS, offline sync queue |
+| **Mobile crew app** | repo root (`index.js` → `src/NativeApp.jsx`) | 5174 | Expo app — the same code runs as the Android APK and on the web (`npm run dev`). The old web prototypes (`src/App.jsx`, `mobile/`) are disabled |
 
 ## Quick start
 

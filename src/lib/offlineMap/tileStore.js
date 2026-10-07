@@ -14,9 +14,24 @@
 //
 // The download is a module-level singleton so it keeps running when the
 // crew switches away from the Map tab.
+import { Platform } from "react-native";
 import { Directory, File, Paths } from "expo-file-system";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { mapApiBase, mapServerHeaders } from "../mapServer";
+
+// The web build has no app storage to hold a pack: it shows live
+// OpenStreetMap tiles instead (like the dashboard) and routes via the server.
+const IS_WEB = Platform.OS === "web";
+const WEB_PACK = {
+  web: true,
+  complete: true,
+  tileUrl: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  minZoom: 6,
+  maxZoom: 19,
+  attribution: "© OpenStreetMap contributors",
+  regions: [],
+  roadsUri: null,
+};
 
 const STATE_KEY = "oms-offline-map-pack";
 const CONCURRENCY = 6;
@@ -50,6 +65,7 @@ async function writeState(state) {
 // `complete: false` means a first download is still in progress (the map
 // shows whatever tiles have arrived so far).
 export async function getInstalledPack() {
+  if (IS_WEB) return WEB_PACK;
   const state = await readState();
   if (!state?.version || !VERSION_RE.test(state.version)) return null;
   const dir = packDir(state.version);
@@ -164,6 +180,7 @@ let abortController = null;
 
 // Starts (or joins) the pack download. Resolves with the installed pack.
 export function downloadPack() {
+  if (IS_WEB) return Promise.resolve(WEB_PACK);
   if (!running) {
     abortController = new AbortController();
     running = doDownload(abortController.signal).finally(() => {
