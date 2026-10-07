@@ -13,7 +13,9 @@
     "map:test-server": "node map-test-server/server.mjs",
     "keycloak:mobile": "node scripts/setup-mobile-keycloak.mjs",
     "roads:build": "node scripts/build-road-graph.mjs",
-    "photos:export": "node scripts/export-photos.mjs"
+    "photos:export": "node scripts/export-photos.mjs",
+    "test-jobs": "node scripts/test-jobs.mjs",
+    "test-jobs:remove": "node scripts/test-jobs.mjs --remove"
   },
   "dependencies": {
     "cors": "^2.8.5",
