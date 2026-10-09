@@ -72,6 +72,18 @@ const NEXT_STATUS = {
   'Work Finished': null,
 };
 
+// The app's last step is 'Work Finished'; the server stores it as
+// 'Work Complete', and dashboard-closed jobs come back Completed/Closed.
+const DONE_STATUSES = ['work finished', 'work complete', 'completed', 'closed'];
+const isJobDone = (job) => DONE_STATUSES.includes(String(job.status).toLowerCase());
+
+// Pending = still to do, so Total = Pending + Done.
+const JOB_FILTERS = {
+  all: { section: 'ALL JOBS', empty: 'No jobs assigned.', test: () => true },
+  pending: { section: 'PENDING JOBS', empty: 'No pending jobs.', test: (job) => !isJobDone(job) },
+  done: { section: 'JOBS DONE', empty: 'No jobs done yet.', test: isJobDone },
+};
+
 // Severity color coding: High -> orange, Medium -> blue, Low -> green,
 // Critical -> red. Kept local (not imported) so this file can never crash
 // due to a missing/misnamed export in another file.
@@ -146,6 +158,7 @@ function NativeAppScreen() {
   const [crew, setCrew] = useState({ name: 'Crew Gamma-2', role: 'Field Technician', id: 'C003' });
   const [jobs, setJobs] = useState(FALLBACK_JOBS);
   const [tab, setTab] = useState('Dashboard');
+  const [jobFilter, setJobFilter] = useState('all');
   const [activeJob, setActiveJob] = useState(null);
   const [mapJobId, setMapJobId] = useState(null);
   // Set by a job's "Navigate to site": the Map tab then guides to that one
@@ -659,19 +672,13 @@ function NativeAppScreen() {
           <>
             <Text style={styles.title}>Today&apos;s field work</Text>
             <Text style={styles.subtitle}>Priority outages assigned to your crew.</Text>
-            <View style={styles.stats}>
-              <Stat value={String(jobs.length)} label="Total jobs" />
-              <Stat
-                value={String(jobs.filter((job) => job.status === 'Pending Acceptance').length)}
-                label="Pending jobs"
-              />
-              <Stat
-                value={String(jobs.filter((job) =>
-                  ['work complete', 'completed', 'closed'].includes(String(job.status).toLowerCase())
-                ).length)}
-                label="Jobs done"
-              />
-            </View>
+            <JobStats
+              jobs={jobs}
+              onSelect={(filter) => {
+                setJobFilter(filter);
+                openPage({ tab: 'Jobs' });
+              }}
+            />
 
             {pendingItems.length > 0 && (
               <View style={styles.pendingSection}>
@@ -706,7 +713,12 @@ function NativeAppScreen() {
             ))}
           </>
         ) : tab === 'Jobs' ? (
-          <NativeJobsPage jobs={jobs} onPressJob={(job) => openPage({ tab: 'Jobs', jobId: job.id })} />
+          <NativeJobsPage
+            jobs={jobs}
+            filter={jobFilter}
+            onFilter={setJobFilter}
+            onPressJob={(job) => openPage({ tab: 'Jobs', jobId: job.id })}
+          />
         ) : tab === 'Map' ? (
           <MapScreen
             jobs={jobs}
@@ -782,23 +794,29 @@ function NativeAppScreen() {
   );
 }
 
-function NativeJobsPage({ jobs, onPressJob }) {
-  const pendingJobs = jobs.filter((job) => job.status === 'Pending Acceptance');
-  const completedJobs = jobs.filter((job) =>
-    ['work complete', 'completed', 'closed'].includes(String(job.status).toLowerCase())
+function JobStats({ jobs, active, onSelect }) {
+  const count = (filter) => String(jobs.filter(JOB_FILTERS[filter].test).length);
+  return (
+    <View style={styles.stats}>
+      <Stat value={count('all')} label="Total jobs" active={active === 'all'} onPress={() => onSelect('all')} />
+      <Stat value={count('pending')} label="Pending jobs" active={active === 'pending'} onPress={() => onSelect('pending')} />
+      <Stat value={count('done')} label="Jobs done" active={active === 'done'} onPress={() => onSelect('done')} />
+    </View>
   );
+}
+
+function NativeJobsPage({ jobs, filter, onFilter, onPressJob }) {
+  const { section, empty, test } = JOB_FILTERS[filter] || JOB_FILTERS.all;
+  const shown = jobs.filter(test);
 
   return (
     <>
       <Text style={styles.title}>Jobs</Text>
       <Text style={styles.subtitle}>Track every assignment and its current status.</Text>
-      <View style={styles.stats}>
-        <Stat value={String(jobs.length)} label="Total jobs" />
-        <Stat value={String(pendingJobs.length)} label="Pending jobs" />
-        <Stat value={String(completedJobs.length)} label="Jobs done" />
-      </View>
-      <Text style={styles.section}>ALL JOBS</Text>
-      {jobs.map((job) => (
+      <JobStats jobs={jobs} active={filter} onSelect={onFilter} />
+      <Text style={styles.section}>{section}</Text>
+      {!shown.length ? <Text style={styles.mapEmpty}>{empty}</Text> : null}
+      {shown.map((job) => (
         <JobCard key={job.id} job={job} onPress={() => onPressJob(job)} />
       ))}
     </>
@@ -1007,12 +1025,24 @@ function HeaderAction({ label, on, count, danger, onPress, disabled, accessibili
   );
 }
 
-function Stat({ value, label }) {
+function Stat({ value, label, active, onPress }) {
+  const content = (
+    <>
+      <Text style={[styles.statValue, active && styles.statValueActive]}>{value}</Text>
+      <Text style={[styles.statLabel, active && styles.statLabelActive]}>{label}</Text>
+    </>
+  );
+  if (!onPress) return <View style={styles.stat}>{content}</View>;
   return (
-    <View style={styles.stat}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    <Pressable
+      style={({ pressed }) => [styles.stat, active && styles.statActive, pressed && { opacity: 0.7 }]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: !!active }}
+      accessibilityLabel={`${label}: ${value}`}
+    >
+      {content}
+    </Pressable>
   );
 }
 
@@ -1117,7 +1147,12 @@ function JobDetail({ job, crew, onClose, onAdvance, onQueued, onNavigate }) {
   const [signOff, setSignOff] = useState(null);
 
   useEffect(() => {
-    getJobPhotos(job.id).then((photos) => setPhotoCount(Array.isArray(photos) ? photos.length : 0)).catch(() => {});
+    // Photos still waiting in Pending sync count too, so a crew with no
+    // signal on site is not blocked by the photo rule below.
+    Promise.all([
+      getJobPhotos(job.id).then((photos) => (Array.isArray(photos) ? photos.length : 0)).catch(() => 0),
+      getQueueItems().then((items) => items.filter((i) => i.type === 'photo' && i.id === job.id).length).catch(() => 0),
+    ]).then(([sent, queued]) => setPhotoCount(sent + queued));
     getAssetScans(job.id).then((scans) => setAssetScans(Array.isArray(scans) ? scans : [])).catch(() => {});
   }, [job.id]);
 
@@ -1126,6 +1161,11 @@ function JobDetail({ job, crew, onClose, onAdvance, onQueued, onNavigate }) {
   const requestAdvance = async () => {
     if (!next || !checklistDone) return;
     if (job.status === 'On Site') {
+      // At least one site photo before work can start; asset scans stay optional.
+      if (photoCount < 1) {
+        setMessage('Take at least one site photo before starting work. Scanning the asset QR is optional.');
+        return;
+      }
       setShowSafety(true);
       return;
     }
@@ -1400,8 +1440,20 @@ function JobDetail({ job, crew, onClose, onAdvance, onQueued, onNavigate }) {
         {checklistDone && showPhotoCamera && <PhotoCamera onCapture={saveCapturedPhoto} onClose={() => setShowPhotoCamera(false)} />}
         {message ? <Text style={styles.assetValue}>{message}</Text> : null}
 
+        {checklistDone && job.status === 'On Site' && photoCount < 1 && (
+          <View style={styles.checklistLock}>
+            <Text style={styles.checklistLockText}>
+              Photo required: take at least one site photo to start work. Scanning the asset QR is optional.
+            </Text>
+          </View>
+        )}
+
         {checklistDone && next && !completionStep && (
-          <Pressable style={styles.primaryBtn} onPress={requestAdvance} disabled={advancing}>
+          <Pressable
+            style={[styles.primaryBtn, job.status === 'On Site' && photoCount < 1 && { opacity: 0.5 }]}
+            onPress={requestAdvance}
+            disabled={advancing}
+          >
             <Text style={styles.primaryBtnText}>
               {advancing ? 'Updating status…' : job.status === 'Pending Acceptance' ? 'Accept task' : `${next} →`}
             </Text>
@@ -1758,7 +1810,7 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
 }
 
 function ProfileScreen({ crew, jobs, onLogout }) {
-  const activeJobs = jobs.filter((job) => !['Work Complete', 'Completed', 'Closed'].includes(job.status));
+  const activeJobs = jobs.filter((job) => !isJobDone(job));
   return (
     <View>
       <Text style={styles.title}>My profile</Text>
@@ -1855,6 +1907,9 @@ const styles = StyleSheet.create({
   stat: { flex: 1, backgroundColor: '#fff', borderRadius: 12, padding: 13, borderWidth: 1, borderColor: '#e6ecf3' },
   statValue: { color: '#173355', fontSize: 18, fontWeight: '800' },
   statLabel: { color: '#7c8da3', fontSize: 11, marginTop: 4 },
+  statActive: { backgroundColor: '#173355', borderColor: '#173355' },
+  statValueActive: { color: '#fff' },
+  statLabelActive: { color: '#c9d6e6' },
   section: { color: '#7c8da3', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 11 },
   pendingSection: { backgroundColor: '#fff7ea', borderRadius: 12, borderWidth: 1, borderColor: '#f2d9a8', padding: 14, marginBottom: 24, gap: 10 },
   pendingSectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
