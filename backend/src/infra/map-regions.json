@@ -1,0 +1,20 @@
+{
+  "_help": "Regions the apps can ask the map server for. Edit freely; no code change needed. 'forCrews: true' = a crew phone may download it. Give each region either lat+lon+radiusKm, or bbox=[minLon,minLat,maxLon,maxLat]. 'crewOverrides' pins a crew id to a region id. Substation regions are built automatically from the GIS network data.",
+  "defaultCrewRegion": "haridwar",
+  "nearestMaxKm": 40,
+  "crewOverrides": {},
+  "regions": [
+    { "id": "dehradun",  "name": "Dehradun division",  "kind": "division", "lat": 30.3165, "lon": 78.0322, "radiusKm": 15, "forCrews": true },
+    { "id": "rishikesh", "name": "Rishikesh division", "kind": "division", "lat": 30.0869, "lon": 78.2676, "radiusKm": 12, "forCrews": true },
+    { "id": "haridwar",  "name": "Haridwar division",  "kind": "division", "lat": 29.9457, "lon": 78.1642, "radiusKm": 12, "forCrews": true },
+    { "id": "corridor",  "name": "Dehradun-Haridwar corridor", "kind": "corridor", "bbox": [77.93, 29.85, 78.37, 30.41] },
+    { "id": "zone-mayapur",           "name": "Mayapur",                 "kind": "zone", "lat": 29.940311, "lon": 78.147653, "radiusKm": 4 },
+    { "id": "zone-bhoopatwala",       "name": "Bhoopatwala",             "kind": "zone", "lat": 29.971419, "lon": 78.182491, "radiusKm": 4 },
+    { "id": "zone-industrial-area",   "name": "Industrial Area",         "kind": "zone", "lat": 29.921,    "lon": 78.152,    "radiusKm": 4 },
+    { "id": "zone-jwalapur",          "name": "Jwalapur",                "kind": "zone", "lat": 29.930,    "lon": 78.170,    "radiusKm": 4 },
+    { "id": "zone-kankhal",           "name": "Kankhal",                 "kind": "zone", "lat": 29.937,    "lon": 78.174,    "radiusKm": 4 },
+    { "id": "zone-dehradun-central",  "name": "Dehradun Central",        "kind": "zone", "lat": 30.3165,   "lon": 78.0322,   "radiusKm": 4 },
+    { "id": "zone-clement-town",      "name": "Clement Town, Dehradun",  "kind": "zone", "lat": 30.279,    "lon": 77.977,    "radiusKm": 4 },
+    { "id": "zone-ballupur",          "name": "Ballupur, Dehradun",      "kind": "zone", "lat": 30.348,    "lon": 78.038,    "radiusKm": 4 }
+  ]
+}

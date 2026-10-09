@@ -7,6 +7,7 @@ import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-nativ
 import { WebView } from 'react-native-webview';
 import { buildHtml, ensureMapPage } from '../lib/offlineMap/mapPage';
 import { mapRoot } from '../lib/offlineMap/tileStore';
+import { readMapResource } from '../lib/offlineMap/areaStore';
 import { usingMapTestServer } from '../lib/mapServer';
 
 // Web build: no WebView, so the same Leaflet page runs in a sandboxed iframe
@@ -53,7 +54,7 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onS
     if (!ready) return;
     const state = {
       pack: pack
-        ? { tileUrl: pack.tileUrl, minZoom: pack.minZoom, maxZoom: pack.maxZoom, bounds: pack.bounds, attribution: pack.attribution }
+        ? { kind: pack.kind, tileUrl: pack.tileUrl, minZoom: pack.minZoom, maxZoom: pack.maxZoom, bounds: pack.bounds, attribution: pack.attribution, style: pack.style }
         : null,
       crew: crew && Number.isFinite(crew.lat) && Number.isFinite(crew.lon) ? crew : null,
       jobs,
@@ -79,7 +80,14 @@ const OfflineMap = forwardRef(function OfflineMap({ pack, crew, jobs, route, onS
     // Metres left along the road route from where the arrow is drawn (null = off route / no route).
     else if (msg?.type === 'progress') onRouteProgress?.(Number.isFinite(msg.remaining) ? msg.remaining : null);
     else if (msg?.type === 'error' || msg?.type === 'tileerror') console.warn('[OfflineMap]', msg.type, String(msg.message || ''));
-  }, [onSelectJob, onUserGesture, onRouteProgress]);
+    // The vector map page cannot open the map file itself, so it asks for each tile / font file here.
+    else if ((msg?.type === 'tile' || msg?.type === 'font') && Number.isInteger(msg.id)) {
+      const id = msg.id;
+      readMapResource(msg)
+        .then((b64) => run(`window.OMS_reply(${id}, ${b64 ? JSON.stringify(b64) : 'null'});`))
+        .catch(() => run(`window.OMS_reply(${id}, null);`));
+    }
+  }, [onSelectJob, onUserGesture, onRouteProgress, run]);
 
   // Web: the page's messages arrive via window.postMessage from the iframe.
   useEffect(() => {

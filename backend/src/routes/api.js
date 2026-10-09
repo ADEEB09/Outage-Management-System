@@ -10,6 +10,8 @@ import { computeIndices, computeMTTR, computeSLACompliance, computeCrewProductiv
 import { buildCsv, buildPdf } from '../domain/reports.js';
 import { MAX_LOCATION_BATCH, parseLocationBatch, newestLivePoint, parseTileParams } from '../domain/locations.js';
 import { createRouter } from '../domain/roadRouter.js';
+import { mapProxy } from './mapProxy.js';
+import { createMapRegionRoutes } from './mapRegions.js';
 import { sendReportNow } from '../realtime/scheduledReports.js';
 import { resolve as resolveAsset, substations as netSubstations } from '../infra/geo.js';
 import { cacheGet, cacheSet, cacheDel } from '../infra/redis.js';
@@ -736,6 +738,10 @@ api.get('/mobile/crews/:id/track', async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 2000, 1), 10000);
   res.json(await repo.crewTrack(req.params.id, from.toISOString(), to.toISOString(), limit));
 });
+
+// ---------- in-house map server (vector map + "give me this area" API) ----------
+// Forwarded to the internal map server; see routes/mapProxy.js. Sits under requireAuth like everything in /api.
+api.use('/map', createMapRegionRoutes({ getNetwork: () => NETWORK, getCrew: (id) => repo.crew(id) }), mapProxy);
 
 // ---------- offline map tile pack ----------
 // Raster tiles for the crew app's offline map, pre-seeded once on the server

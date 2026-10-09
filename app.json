@@ -71,7 +71,8 @@
       "expo-web-browser",
       "expo-font",
       "expo-task-manager",
-      "expo-sqlite"
+      "expo-sqlite",
+      "@maplibre/maplibre-react-native"
     ],
     "extra": {
       "eas": {

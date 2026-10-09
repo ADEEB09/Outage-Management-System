@@ -12,6 +12,7 @@
 // taps back with postMessage.
 import { File } from "expo-file-system";
 import { LEAFLET_CSS, LEAFLET_JS } from "./leafletBundle";
+import { MAPLIBRE_CSS, MAPLIBRE_JS, MAPLIBRE_LEAFLET_JS } from "./maplibreBundle";
 import { mapRoot } from "./tileStore";
 
 const PAGE_SCRIPT = `
@@ -104,6 +105,67 @@ const PAGE_SCRIPT = `
     }
   });
 
+  // ---- Vector basemap from the in-house map server -----------------------------------------------
+  // The map file lives on the phone as an .mbtiles database that a WebView cannot open, so the page asks the
+  // app for every tile and font file over the message bridge and the app answers from that file. Nothing
+  // here touches the network, so the strict CSP below still holds.
+  var pending = {}, nextReq = 1;
+  function ask(msg) {
+    return new Promise(function (resolve) {
+      var id = nextReq++;
+      pending[id] = resolve;
+      msg.id = id;
+      post(msg);
+      setTimeout(function () { if (pending[id]) { delete pending[id]; resolve(null); } }, 10000);
+    });
+  }
+  window.OMS_reply = function (id, b64) {
+    var done = pending[id];
+    if (done) { delete pending[id]; done(b64); }
+  };
+  function fromBase64(b64) {
+    var bin = atob(b64), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  // Map tiles are stored gzip-compressed.
+  function gunzip(bytes) {
+    if (bytes.length < 2 || bytes[0] !== 0x1f || bytes[1] !== 0x8b) return Promise.resolve(bytes.buffer);
+    if (typeof DecompressionStream === 'undefined') {
+      return Promise.reject(new Error('This WebView cannot unpack map tiles - update Android System WebView or iOS.'));
+    }
+    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).arrayBuffer();
+  }
+  if (window.maplibregl) {
+    maplibregl.addProtocol('oms', function (params) {
+      var parts = params.url.replace('oms://', '').split('/');
+      var req = parts[0] === 'tile'
+        ? { type: 'tile', z: Number(parts[1]), x: Number(parts[2]), y: Number(parts[3]) }
+        : { type: 'font', stack: decodeURIComponent(parts[1] || ''), range: parts[2] };
+      return ask(req).then(function (b64) {
+        if (!b64) return { data: new Uint8Array(0) };
+        var bytes = fromBase64(b64);
+        if (req.type !== 'tile') return { data: bytes.buffer };
+        return gunzip(bytes).then(function (buf) { return { data: buf }; });
+      });
+    });
+  }
+  function applyVectorPack(p) {
+    if (!p.style || !p.style.sources || !window.maplibregl || !L.maplibreGL) {
+      post({ type: 'error', message: 'Vector map engine or style missing' });
+      return null;
+    }
+    var style = JSON.parse(JSON.stringify(p.style));
+    style.sources.openmaptiles = {
+      type: 'vector', tiles: ['oms://tile/{z}/{x}/{y}'],
+      minzoom: finite(p.minZoom) ? p.minZoom : 8, maxzoom: finite(p.maxZoom) ? p.maxZoom : 14,
+      bounds: p.bounds && p.bounds.length === 4 ? p.bounds : undefined
+    };
+    style.glyphs = 'oms://font/{fontstack}/{range}';
+    return L.maplibreGL({ style: style }).addTo(map);
+  }
+
   function applyPack(p) {
     var url = p && p.tileUrl;
     if (url === tileUrl) return;
@@ -114,14 +176,18 @@ const PAGE_SCRIPT = `
     var minNative = finite(p.minZoom) ? p.minZoom : 8;
     // Nothing exists below the pack's lowest zoom, so don't let the map go there.
     map.setMinZoom(Math.max(6, minNative));
-    tileLayer = new OfflineTiles(url, {
-      minNativeZoom: minNative,
-      maxNativeZoom: finite(p.maxZoom) ? p.maxZoom : 16,
-      maxZoom: 18,
-      bounds: packBounds(p) || undefined,
-      keepBuffer: 2,
-      updateWhenIdle: true
-    }).addTo(map);
+    if (p.kind === 'vector') {
+      tileLayer = applyVectorPack(p);
+    } else {
+      tileLayer = new OfflineTiles(url, {
+        minNativeZoom: minNative,
+        maxNativeZoom: finite(p.maxZoom) ? p.maxZoom : 16,
+        maxZoom: 18,
+        bounds: packBounds(p) || undefined,
+        keepBuffer: 2,
+        updateWhenIdle: true
+      }).addTo(map);
+    }
     // addAttribution takes HTML; escape the server-provided text.
     attribution = textNode(p.attribution || '').innerHTML;
     if (attribution) map.attributionControl.addAttribution(attribution);
@@ -404,15 +470,17 @@ window.addEventListener('message', function (e) {
 
 export function buildHtml({ web = false } = {}) {
   // Native: tiles only from disk. Web: live OpenStreetMap tiles.
-  const imgSrc = web ? "https://tile.openstreetmap.org data:" : "file: data:";
+  // blob: is for the vector map (MapLibre draws into blobs and runs a blob worker).
+  const imgSrc = web ? "https://tile.openstreetmap.org data: blob:" : "file: data: blob:";
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 ${web ? '<meta name="referrer" content="strict-origin-when-cross-origin" />' : ""}
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${imgSrc}; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${imgSrc}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; worker-src blob:; child-src blob:; connect-src blob: data:" />
 <style>${LEAFLET_CSS}</style>
+<style>${MAPLIBRE_CSS}</style>
 <style>
   html, body, #map { height: 100%; margin: 0; padding: 0; }
   #map { background: #e8eef3; }
@@ -425,6 +493,8 @@ ${web ? '<meta name="referrer" content="strict-origin-when-cross-origin" />' : "
 <div id="map"></div>
 ${web ? `<script>${WEB_BRIDGE}</script>` : ""}
 <script>${LEAFLET_JS}</script>
+<script>${MAPLIBRE_JS}</script>
+<script>${MAPLIBRE_LEAFLET_JS}</script>
 <script>${PAGE_SCRIPT}</script>
 </body>
 </html>`;

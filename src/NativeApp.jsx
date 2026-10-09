@@ -43,8 +43,9 @@ import { openMultiJobRoute } from './lib/routing';
 import { queueUpdate, queueScan, isRetryable, flushQueue, getQueueLength, getQueueItems } from './lib/offlineQueue';
 import { startCrewTracking, stopCrewTracking, autoStartCrewTracking, setTrackingPausedByCrew, isLocationServiceOn } from './lib/backgroundLocation';
 import { flushLocations, getPendingLocationCount } from './lib/locationQueue';
-import { downloadPack, cancelPackDownload, getInstalledPack, getPackStatus, subscribePackStatus } from './lib/offlineMap/tileStore';
+import { downloadPack, cancelPackDownload, getInstalledPack, getPackStatus, subscribePackStatus } from './lib/offlineMap/areaStore';
 import OfflineMap from './components/OfflineMap';
+import NativeMapSpike from './components/NativeMapSpike'; // SPIKE: native vector map test (Profile tab)
 import { usingMapTestServer } from './lib/mapServer';
 import { checkServer, getServer, setServer } from './lib/server';
 import SafetyChecklist from './components/SafetyChecklist';
@@ -1811,8 +1812,12 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
 
 function ProfileScreen({ crew, jobs, onLogout }) {
   const activeJobs = jobs.filter((job) => !isJobDone(job));
+  const [mapSpikeOpen, setMapSpikeOpen] = useState(false);
   return (
     <View>
+      <Modal visible={mapSpikeOpen} animationType="slide" onRequestClose={() => setMapSpikeOpen(false)}>
+        {mapSpikeOpen ? <NativeMapSpike onClose={() => setMapSpikeOpen(false)} /> : null}
+      </Modal>
       <Text style={styles.title}>My profile</Text>
       <Text style={styles.subtitle}>Crew identity and field assignment details.</Text>
       <View style={styles.profilePanel}>
@@ -1833,6 +1838,9 @@ function ProfileScreen({ crew, jobs, onLogout }) {
         <Text style={styles.profileDetailLine}>Status: Ready for assignment</Text>
         <Text style={styles.profileDetailLine}>Session: Offline capable</Text>
       </View>
+      <Pressable style={styles.logoutBtn} onPress={() => setMapSpikeOpen(true)}>
+        <Text style={styles.logoutBtnText}>Native map test</Text>
+      </Pressable>
       <Pressable style={styles.logoutBtn} onPress={onLogout}>
         <Text style={styles.logoutBtnText}>Sign out</Text>
       </Pressable>

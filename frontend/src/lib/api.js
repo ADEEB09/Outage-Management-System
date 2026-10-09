@@ -66,6 +66,7 @@ export const api = {
   audit: () => req('GET', '/audit'),
   network: () => req('GET', '/network'),
   networkTopology: () => req('GET', '/network/topology'),
+  mapRegions: () => req('GET', '/map/regions'),   // regions the OMS can cut out of the in-house map
   networkSection: (mrid) => req('GET', `/network/section/${encodeURIComponent(mrid)}`),
   
   network: () => req('GET', '/network'),

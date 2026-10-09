@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import '@maplibre/maplibre-gl-leaflet'; // adds L.maplibreGL (vector basemap inside the existing Leaflet map)
 import { api, socket } from '../lib/api.js';
 import { TRAIL_WINDOWS, DEFAULT_WINDOW, MAX_POINTS, windowMs, normalizeTrack, splitTrail, summarize, thinDots, fmtClock, fmtDur, fmtAgo } from '../lib/trail.js';
+import { authHeader } from '../lib/auth.js';
 import { Icon, SevBadge, StatusBadge, useLiveRefresh } from '../lib/ui.jsx';
 
 const SEVC = { critical: '#e23b2e', high: '#ef9021', medium: '#3b82f6', low: '#22b06b' };
@@ -52,6 +55,8 @@ export default function NetworkMap() {
   const [openResults, setOpenResults] = useState(false);
   const [topo, setTopo] = useState(null);       // GeoJSON from /api/network/topology (null = loading)
   const [trace, setTrace] = useState(null);     // result of /api/network/section/:mrid
+  const [regions, setRegions] = useState([]);   // regions from /api/map/regions (substations, zones, divisions)
+  const [regionId, setRegionId] = useState('');
   const [traceBusy, setTraceBusy] = useState(false);
   const [trailWin, setTrailWin] = useState(DEFAULT_WINDOW); // how far back trails reach
   const [trailCrew, setTrailCrew] = useState(null);         // null = every crew, else one crew id
@@ -73,6 +78,7 @@ export default function NetworkMap() {
 
   useEffect(() => { api.network().then(setNet).catch(() => setNet({ error: true })); }, []);
   useEffect(() => { api.networkTopology().then(setTopo).catch(() => setTopo({ error: true })); }, []);
+  useEffect(() => { api.mapRegions().then((r) => setRegions(r.regions || [])).catch(() => {}); }, []);
   const loadLive = () => { api.incidents().then(setInc); api.crews().then(setCrews); };
   useEffect(() => { loadLive(); }, []);
   useLiveRefresh(['oms.incident.updated', 'oms.incident.created'], () => api.incidents().then(setInc));
@@ -161,7 +167,13 @@ export default function NetworkMap() {
     const bounds = L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
     const map = L.map(boxRef.current, { preferCanvas: true, zoomControl: false, attributionControl: true, maxZoom: 19, zoomSnap: 0.25, wheelPxPerZoomLevel: 90 });
     map.fitBounds(bounds.pad(0.05));
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap', opacity: 0.92 }).addTo(map);
+    // Basemap: vector map from the in-house map server, reached through the OMS backend (/api/map), so the
+    // normal login protects it and nothing is loaded from the public internet. transformRequest attaches the
+    // Bearer token to every map request (style, tiles, fonts). Leaflet layers (feeders, crews...) draw on top.
+    L.maplibreGL({
+      style: '/api/map/style.json',
+      transformRequest: (url) => (new URL(url, location.href).pathname.startsWith('/api/map/') ? { url, headers: authHeader() } : undefined),
+    }).addTo(map);
     L.control.zoom({ position: 'topright' }).addTo(map);
     mapRef.current = map;
     map.__bounds = bounds;
@@ -448,6 +460,15 @@ export default function NetworkMap() {
     hiRef.current = L.marker([lat, lon], { icon: L.divIcon({ className: '', html: '<div class="mk-find"></div>', iconSize: [34, 34], iconAnchor: [17, 17] }), zIndexOffset: 2000 }).addTo(map);
   }
   // fly the map to a searched item and reveal / highlight it
+  // Fly to a region chosen from the OMS's own GIS data (substation areas, zones, divisions).
+  function goRegion(id) {
+    setRegionId(id);
+    const r = regions.find((x) => x.id === id);
+    const map = mapRef.current;
+    if (!r || !map) return;
+    map.flyToBounds(L.latLngBounds([r.bbox[1], r.bbox[0]], [r.bbox[3], r.bbox[2]]), { duration: 0.6 });
+  }
+
   function goTo(item) {
     const map = mapRef.current; if (!map) return;
     const layerKey = { ss: 'substations', ptx: 'powerTx', dt: 'distTx', switch: 'switches', rmu: 'rmus', fuse: 'fuses', feeder: 'feeders', incident: 'incidents', crew: 'crews' }[item.kind];
@@ -546,6 +567,20 @@ export default function NetworkMap() {
                   </button>
                 ))}
               </div>
+            )}
+            {regions.length > 0 && (
+              <select className="ms-box" aria-label="Go to region" value={regionId} onChange={(e) => goRegion(e.target.value)}
+                style={{ marginTop: 6, width: '100%', fontSize: 13, color: 'var(--ink)', cursor: 'pointer' }}>
+                <option value="">Go to region…</option>
+                {['division', 'zone', 'substation', 'corridor', 'network'].map((kind) => {
+                  const list = regions.filter((r) => r.kind === kind);
+                  return list.length ? (
+                    <optgroup key={kind} label={{ division: 'Divisions', zone: 'Zones', substation: 'Substations', corridor: 'Corridors', network: 'Whole network' }[kind]}>
+                      {list.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                    </optgroup>
+                  ) : null;
+                })}
+              </select>
             )}
           </div>
 

@@ -26,10 +26,15 @@
     "test": "npm --workspace backend run test",
     "start": "concurrently -n backend,web,mobile -c cyan,green,magenta \"npm:dev:backend\" \"npm:dev:web\" \"npm:dev:mobile\"",
     "build:leaflet": "node scripts/build-leaflet-bundle.mjs",
+    "build:maplibre": "node scripts/build-maplibre-bundle.mjs",
+    "map:check": "node scripts/map-connect.mjs check",
+    "map:tunnel": "node scripts/map-connect.mjs tunnel",
+    "map:config": "node scripts/map-connect.mjs config",
     "build:icons": "node scripts/build-app-icons.mjs"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.16",
+    "@maplibre/maplibre-react-native": "11.4.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@types/react": "~19.2.4",
     "expo": "~57.0.24",
@@ -59,10 +64,12 @@
     "sharp": "^0.35.4"
   },
   "devDependencies": {
+    "@maplibre/maplibre-gl-leaflet": "0.1.4",
     "@types/react": "~19.0.10",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^8.2.2",
     "leaflet": "1.9.4",
+    "maplibre-gl": "5.24.0",
     "shadcn": "^4.19.0",
     "typescript": "~5.8.3",
     "vite": "8.2.2",
