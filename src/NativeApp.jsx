@@ -165,6 +165,9 @@ function NativeAppScreen() {
   // Set by a job's "Navigate to site": the Map tab then guides to that one
   // incident instead of showing every job. Cleared from the Map tab or nav bar.
   const [navJobId, setNavJobId] = useState(null);
+  // SPIKE: the new native map, opened from Profile (no job) or a job's
+  // "Navigate (new map)" (navigates straight to that job).
+  const [nativeMap, setNativeMap] = useState(null); // null | { jobId }
   const [pendingCount, setPendingCount] = useState(0);
   const [pendingItems, setPendingItems] = useState([]);
   const [crewMessages, setCrewMessages] = useState([]);
@@ -730,7 +733,7 @@ function NativeAppScreen() {
             onExitNav={() => setNavJobId(null)}
           />
         ) : tab === 'Profile' ? (
-          <ProfileScreen crew={crew} jobs={jobs} onLogout={signOut} />
+          <ProfileScreen crew={crew} jobs={jobs} onLogout={signOut} onOpenNativeMap={() => setNativeMap({ jobId: null })} />
         ) : (
           <View style={styles.empty}>
             <Text style={styles.title}>{tab}</Text>
@@ -763,6 +766,7 @@ function NativeAppScreen() {
             onClose={goBack}
             onAdvance={handleAdvance}
             onQueued={reloadPending}
+            onNavigateNative={(job) => setNativeMap({ jobId: job.id })}
             onNavigate={(job) => {
               setMapJobId(job.id);
               setNavJobId(job.id);
@@ -770,6 +774,9 @@ function NativeAppScreen() {
             }}
           />
         )}
+      </Modal>
+      <Modal visible={!!nativeMap} animationType="slide" onRequestClose={() => setNativeMap(null)}>
+        {nativeMap ? <NativeMapSpike jobs={jobs} crew={crew} initialJobId={nativeMap.jobId} onClose={() => setNativeMap(null)} /> : null}
       </Modal>
       <Modal visible={messagesVisible} animationType="slide" onRequestClose={() => setMessagesVisible(false)}>
         <SafeAreaView style={styles.detailSafe}>
@@ -1123,7 +1130,7 @@ function PhotoCamera({ onCapture, onClose }) {
   );
 }
 
-function JobDetail({ job, crew, onClose, onAdvance, onQueued, onNavigate }) {
+function JobDetail({ job, crew, onClose, onAdvance, onQueued, onNavigate, onNavigateNative }) {
   const [showSafety, setShowSafety] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [showPhotoCamera, setShowPhotoCamera] = useState(false);
@@ -1385,6 +1392,11 @@ function JobDetail({ job, crew, onClose, onAdvance, onQueued, onNavigate }) {
           onNavigate(job);
         }}>
           <Text style={styles.secondaryBtnText}>Navigate to site</Text>
+        </Pressable>
+        )}
+        {checklistDone && onNavigateNative && (
+        <Pressable style={styles.secondaryBtn} onPress={() => onNavigateNative(job)}>
+          <Text style={styles.secondaryBtnText}>Navigate (new map)</Text>
         </Pressable>
         )}
 
@@ -1810,14 +1822,10 @@ function MapScreen({ jobs, selectedJobId, onSelect, crew, navJobId, onExitNav })
   );
 }
 
-function ProfileScreen({ crew, jobs, onLogout }) {
+function ProfileScreen({ crew, jobs, onLogout, onOpenNativeMap }) {
   const activeJobs = jobs.filter((job) => !isJobDone(job));
-  const [mapSpikeOpen, setMapSpikeOpen] = useState(false);
   return (
     <View>
-      <Modal visible={mapSpikeOpen} animationType="slide" onRequestClose={() => setMapSpikeOpen(false)}>
-        {mapSpikeOpen ? <NativeMapSpike onClose={() => setMapSpikeOpen(false)} /> : null}
-      </Modal>
       <Text style={styles.title}>My profile</Text>
       <Text style={styles.subtitle}>Crew identity and field assignment details.</Text>
       <View style={styles.profilePanel}>
@@ -1838,8 +1846,8 @@ function ProfileScreen({ crew, jobs, onLogout }) {
         <Text style={styles.profileDetailLine}>Status: Ready for assignment</Text>
         <Text style={styles.profileDetailLine}>Session: Offline capable</Text>
       </View>
-      <Pressable style={styles.logoutBtn} onPress={() => setMapSpikeOpen(true)}>
-        <Text style={styles.logoutBtnText}>Native map test</Text>
+      <Pressable style={styles.logoutBtn} onPress={onOpenNativeMap}>
+        <Text style={styles.logoutBtnText}>New map (test)</Text>
       </Pressable>
       <Pressable style={styles.logoutBtn} onPress={onLogout}>
         <Text style={styles.logoutBtnText}>Sign out</Text>
